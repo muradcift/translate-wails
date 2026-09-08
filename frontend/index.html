@@ -214,6 +214,48 @@
       }
       #copybtn:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
       .error { color: #f28b82 !important; }
+      #settings {
+        position: fixed;
+        inset: 0;
+        z-index: 200;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(8, 8, 12, 0.55);
+        -webkit-backdrop-filter: blur(6px);
+        backdrop-filter: blur(6px);
+      }
+      #settings[hidden] { display: none; }
+      #settingsCard {
+        width: 420px;
+        max-width: calc(100% - 48px);
+        background: #20202a;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 18px;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+        overflow: hidden;
+      }
+      #settingsHead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        font-size: 15px;
+        font-weight: 600;
+      }
+      #settingsClose {
+        border: none;
+        background: transparent;
+        color: #8e8e96;
+        cursor: pointer;
+        padding: 6px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+      }
+      #settingsClose:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+      #settingsBody { padding: 18px 16px; color: #8e8e96; font-size: 13px; }
     </style>
   </head>
   <body>
@@ -244,6 +286,17 @@
         </div>
       </div>
     </main>
+    <div id="settings" hidden>
+      <div id="settingsCard">
+        <div id="settingsHead">
+          <span>Settings</span>
+          <button id="settingsClose" title="Close settings">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg>
+          </button>
+        </div>
+        <div id="settingsBody">Nothing to configure yet.</div>
+      </div>
+    </div>
     <script src="./src/main.js" type="module"></script>
   </body>
 </html>

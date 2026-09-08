@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"time"
+	"unsafe"
 )
 
 // App struct
@@ -26,11 +27,25 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.startHotkeyLoop()
+	a.startKbdHook()
+	a.applyRoundedCorners()
 }
 
-// Greet returns a greeting for the given name
-func (a *App) Greet(name string) string {
-	return fmt.Sprintf("Hello %s, It's show time!", name)
+// applyRoundedCorners asks DWM (Windows 11) to round the frameless window's
+// corners; on Windows 10 the call fails and the window stays square.
+func (a *App) applyRoundedCorners() {
+	go func() {
+		// The window handle may not exist yet at startup; retry briefly.
+		for i := 0; i < 20; i++ {
+			if hwnd := findTranslatorWindow(); hwnd != 0 {
+				pref := uint32(dwmwcpRound)
+				procDwmSetWindowAttribute.Call(
+					hwnd, dwmwaWindowCornerPreference, uintptr(unsafe.Pointer(&pref)), 4)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
 }
 
 // TranslateText translates text via the keyless Google endpoint.

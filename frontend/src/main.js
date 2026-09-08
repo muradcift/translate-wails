@@ -35,9 +35,10 @@ function copyBridge(text) {
   const status = document.getElementById("status");
 
   // Raycast tarzı: pencere düğmesi yok, Esc gizler, hotkey geri getirir.
-  // Açık dil menüsü varsa Esc önce onu kapatır.
+  // Esc sırası: ayar paneli → dil menüsü → pencereyi gizle.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
+      if (closeSettings()) return;
       if (closeOpenDropdown()) return;
       hideWindow();
     }
@@ -52,6 +53,22 @@ function copyBridge(text) {
     return true;
   }
   document.addEventListener("click", () => closeOpenDropdown());
+
+  // Settings pane: Win+, toggles it while the window is focused (backend
+  // hook emits "open-settings"); Esc / ✕ / backdrop click closes it.
+  const settings = document.getElementById("settings");
+  function closeSettings() {
+    if (settings.hidden) return false;
+    settings.hidden = true;
+    return true;
+  }
+  document.getElementById("settingsClose").addEventListener("click", closeSettings);
+  settings.addEventListener("click", (e) => {
+    if (e.target === settings) closeSettings();
+  });
+  onBridgeEvent("open-settings", () => {
+    settings.hidden = !settings.hidden;
+  });
 
   function buildDropdown(btnId, listId, labelId, items, initial) {
     const btn = document.getElementById(btnId);

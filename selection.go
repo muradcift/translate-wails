@@ -92,9 +92,9 @@ func sendKey(vk uint16, up bool) {
 }
 
 func sendCtrlC() {
-	// WM_HOTKEY fires on Alt+T key-down, so the user's Alt is almost always
+	// WM_HOTKEY fires on Win+T key-down, so the user's Win is almost always
 	// still physically held here. Release the synthesized-key-state modifiers
-	// first, or the target app receives Ctrl+Alt+C (no copy) instead of Ctrl+C.
+	// first, or the target app receives Ctrl+Win+C (no copy) instead of Ctrl+C.
 	sendKey(vkMenu, true)
 	sendKey(vkShift, true)
 	sendKey(vkLwin, true)

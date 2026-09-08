@@ -6,10 +6,6 @@ export function CopyText(arg1) {
   return window['go']['main']['App']['CopyText'](arg1);
 }
 
-export function Greet(arg1) {
-  return window['go']['main']['App']['Greet'](arg1);
-}
-
 export function TranslateText(arg1, arg2, arg3) {
   return window['go']['main']['App']['TranslateText'](arg1, arg2, arg3);
 }

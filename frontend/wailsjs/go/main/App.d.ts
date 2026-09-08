@@ -4,6 +4,4 @@ import {main} from '../models';
 
 export function CopyText(arg1:string):Promise<void>;
 
-export function Greet(arg1:string):Promise<string>;
-
 export function TranslateText(arg1:string,arg2:string,arg3:string):Promise<main.TranslationResult>;

@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Alt+T global hotkey. The handler runs synchronously on the registering
+// Win+T global hotkey. The handler runs synchronously on the registering
 // thread (pinned with LockOSThread + its own GetMessage loop), because that
 // thread owns the foreground activation right from the hotkey input.
 //
@@ -23,6 +23,7 @@ import (
 //
 // No COM is initialized on this thread: capture is clipboard-only (see
 // selection.go) and UIA was removed after it wedged the whole process.
+// MOD_WIN suppresses the system's Win+T taskbar-cycling shortcut.
 
 const hotkeyID = 1
 
@@ -41,9 +42,9 @@ func (a *App) startHotkeyLoop() {
 		// Open this thread's message queue before registering.
 		procPeekMessageW.Call(uintptr(unsafe.Pointer(&msg[0])), 0, 0, 0, 0)
 
-		r, _, _ := procRegisterHotKey.Call(0, hotkeyID, modAlt|modNoRepeat, vkT)
+		r, _, _ := procRegisterHotKey.Call(0, hotkeyID, modWin|modNoRepeat, vkT)
 		if r == 0 {
-			wailsruntime.LogErrorf(a.ctx, "Alt+T hotkey could not be registered (already in use?).")
+			wailsruntime.LogErrorf(a.ctx, "Win+T hotkey could not be registered (already in use?).")
 			return
 		}
 

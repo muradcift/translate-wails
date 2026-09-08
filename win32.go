@@ -9,6 +9,7 @@ var (
 	modUser32   = windows.NewLazySystemDLL("user32.dll")
 	modKernel32 = windows.NewLazySystemDLL("kernel32.dll")
 	modWinHTTP  = windows.NewLazySystemDLL("winhttp.dll")
+	modDwmapi   = windows.NewLazySystemDLL("dwmapi.dll")
 
 	procRegisterHotKey             = modUser32.NewProc("RegisterHotKey")
 	procGetMessageW                = modUser32.NewProc("GetMessageW")
@@ -25,6 +26,10 @@ var (
 	procGetWindowLongPtrW          = modUser32.NewProc("GetWindowLongPtrW")
 	procSetWindowPos               = modUser32.NewProc("SetWindowPos")
 	procSendInput                  = modUser32.NewProc("SendInput")
+	procSetWindowsHookExW          = modUser32.NewProc("SetWindowsHookExW")
+	procCallNextHookEx             = modUser32.NewProc("CallNextHookEx")
+	procGetAsyncKeyState           = modUser32.NewProc("GetAsyncKeyState")
+	procGetForegroundWindow        = modUser32.NewProc("GetForegroundWindow")
 	procOpenClipboard              = modUser32.NewProc("OpenClipboard")
 	procCloseClipboard             = modUser32.NewProc("CloseClipboard")
 	procEmptyClipboard             = modUser32.NewProc("EmptyClipboard")
@@ -41,6 +46,8 @@ var (
 	procGlobalSize    = modKernel32.NewProc("GlobalSize")
 	procRtlMoveMemory = modKernel32.NewProc("RtlMoveMemory")
 
+	procDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
+
 	procWinHttpOpen               = modWinHTTP.NewProc("WinHttpOpen")
 	procWinHttpConnect            = modWinHTTP.NewProc("WinHttpConnect")
 	procWinHttpOpenRequest        = modWinHTTP.NewProc("WinHttpOpenRequest")
@@ -55,10 +62,23 @@ var (
 )
 
 const (
-	modAlt      = 0x0001
+	modWin      = 0x0008
 	modNoRepeat = 0x4000
 	vkT         = 0x54
 	wmHotkey    = 0x0312
+
+	// Low-level keyboard hook (WH_KEYBOARD_LL) for the focus-scoped Win+,
+	// settings accelerator. See kbdhook.go.
+	whKeyboardLl  = 13
+	llkhfInjected = 0x10
+	wmKeydown     = 0x0100
+	wmKeyup       = 0x0101
+	wmSyskeydown  = 0x0104
+	wmSyskeyup    = 0x0105
+
+	// Windows 11 rounded corners via DWM; the call is a silent no-op on Win10.
+	dwmwaWindowCornerPreference = 33
+	dwmwcpRound                 = 2
 
 	swShow    = 5
 	swShowNA  = 4
@@ -80,6 +100,7 @@ const (
 	vkShift        = 0x10
 	vkLwin         = 0x5B
 	vkRwin         = 0x5C
+	vkOemComma     = 0xBC
 	vkC            = 0x43
 	keyeventfKeyup = 0x0002
 	inputKeyboard  = 1
