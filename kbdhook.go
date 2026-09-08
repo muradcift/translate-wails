@@ -8,11 +8,20 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// Focus-scoped Win+, accelerator via a low-level keyboard hook. When the
-// Translator window itself is foreground, Win+, toggles the settings pane
-// and the event is swallowed so the shell's desktop-peek never fires; in
-// every other app the key passes straight through and Peek keeps working.
-// Win+T (global) does NOT go through here — RegisterHotKey handles it.
+// Low-level keyboard hook, two jobs:
+//
+//   - Win+T (global): the shell owns Win+T — RegisterHotKey(MOD_WIN, T) fails
+//     with "Hot key is already registered" (probed live; MOD_ALT succeeds) —
+//     so the only way in is to swallow the key here, before any hotkey
+//     mechanism sees it, and post wmAppHotkey to the hotkey thread. The
+//     swallowed key also takes the shell's taskbar-cycling out of play.
+//   - Win+, (focus-scoped): toggles the settings pane ONLY while the
+//     Translator window is foreground; in every other app the key passes
+//     straight through and the shell's desktop-peek keeps working.
+//
+// After swallowing a Win-combo we mask the next Win key-up: the shell opens
+// the Start menu on a Win release it believes had "no key pressed in
+// between" (the AutoHotkey masking pattern).
 //
 // The hook lives on its own pinned thread with a message pump: low-level
 // hook callbacks must return within a few ms or Windows silently removes
@@ -28,7 +37,16 @@ type kbdllhookstruct struct {
 	dwExtraInfo uintptr
 }
 
-var appRef *App
+var (
+	appRef *App
+
+	// Set by the hotkey thread so the hook can post wmAppHotkey to it.
+	hotkeyThreadId uintptr
+
+	// Hook-thread-only state (the callback is serialized on that thread).
+	winTArmed         bool // Win+T currently held: swallow auto-repeats
+	winComboSwallowed bool // mask the next Win key-up (Start menu)
+)
 
 func (a *App) startKbdHook() {
 	appRef = a
@@ -65,13 +83,41 @@ var kbdHookProc = syscall.NewCallback(func(nCode uintptr, wParam uintptr, lParam
 			// clipboard.go, and it keeps `go vet` happy.
 			var kb kbdllhookstruct
 			procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&kb)), lParam, unsafe.Sizeof(kb))
-			// Skip our own synthesized input; only react to real Win+,
-			// pressed while our window is foreground.
-			if kb.vkCode == vkOemComma && kb.flags&llkhfInjected == 0 && winKeyDown() && translatorIsForeground() {
-				if appRef != nil && appRef.ctx != nil {
-					wailsruntime.EventsEmit(appRef.ctx, "open-settings")
+			// Skip our own synthesized input entirely.
+			if kb.flags&llkhfInjected == 0 {
+				switch kb.vkCode {
+				case vkT:
+					if winKeyDown() {
+						if kb.flags&llkhfUp != 0 {
+							winTArmed = false
+						} else if !winTArmed {
+							winTArmed = true
+							winComboSwallowed = true
+							if hotkeyThreadId != 0 {
+								procPostThreadMessageW.Call(hotkeyThreadId, wmAppHotkey, 0, 0)
+							}
+						}
+						return 1 // swallow: the shell's taskbar-cycle must not fire
+					}
+				case vkLwin, vkRwin:
+					// Mask the Win release after a swallowed combo so the
+					// shell does not pop the Start menu on a release it
+					// believes had no key pressed in between.
+					if kb.flags&llkhfUp != 0 && winComboSwallowed {
+						winComboSwallowed = false
+						return 1
+					}
+				case vkOemComma:
+					if winKeyDown() && translatorIsForeground() {
+						if kb.flags&llkhfUp == 0 {
+							winComboSwallowed = true
+							if appRef != nil && appRef.ctx != nil {
+								wailsruntime.EventsEmit(appRef.ctx, "open-settings")
+							}
+						}
+						return 1 // swallow: shell desktop-peek must not fire
+					}
 				}
-				return 1 // swallow: shell desktop-peek must not fire
 			}
 		}
 	}

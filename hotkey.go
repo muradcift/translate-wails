@@ -15,6 +15,11 @@ import (
 // thread (pinned with LockOSThread + its own GetMessage loop), because that
 // thread owns the foreground activation right from the hotkey input.
 //
+// Trigger is dual-path: the keyboard hook in kbdhook.go is PRIMARY (the
+// shell owns Win+T, RegisterHotKey fails with "already registered") and
+// posts wmAppHotkey here; our own RegisterHotKey attempt is a fallback for
+// machines where the combo happens to be free.
+//
 // Order on WM_HOTKEY (do not reorder — avoids the focus-stealing race):
 //  1. capture the selection FIRST (previous app still focused)
 //  2. show + foreground our window
@@ -23,7 +28,6 @@ import (
 //
 // No COM is initialized on this thread: capture is clipboard-only (see
 // selection.go) and UIA was removed after it wedged the whole process.
-// MOD_WIN suppresses the system's Win+T taskbar-cycling shortcut.
 
 const hotkeyID = 1
 
@@ -42,11 +46,14 @@ func (a *App) startHotkeyLoop() {
 		// Open this thread's message queue before registering.
 		procPeekMessageW.Call(uintptr(unsafe.Pointer(&msg[0])), 0, 0, 0, 0)
 
-		r, _, _ := procRegisterHotKey.Call(0, hotkeyID, modWin|modNoRepeat, vkT)
-		if r == 0 {
-			wailsruntime.LogErrorf(a.ctx, "Win+T hotkey could not be registered (already in use?).")
-			return
-		}
+		// Best-effort: the shell owns Win+T on most machines ("Hot key is
+		// already registered"), so the primary trigger is the keyboard hook
+		// in kbdhook.go posting wmAppHotkey here. If registration happens to
+		// succeed, WM_HOTKEY works as a fallback. Either way this thread
+		// must stay alive and pump.
+		procRegisterHotKey.Call(0, hotkeyID, modWin|modNoRepeat, vkT)
+		id, _, _ := procGetCurrentThreadId.Call()
+		hotkeyThreadId = id
 
 		for {
 			r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&msg[0])), 0, 0, 0)
@@ -55,7 +62,7 @@ func (a *App) startHotkeyLoop() {
 			}
 			msgID := *(*uint32)(unsafe.Pointer(&msg[8]))
 			wParam := *(*uintptr)(unsafe.Pointer(&msg[16]))
-			if msgID == wmHotkey && int(wParam) == hotkeyID {
+			if (msgID == wmHotkey && int(wParam) == hotkeyID) || msgID == wmAppHotkey {
 				a.handleHotkey()
 			}
 			procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg[0])))

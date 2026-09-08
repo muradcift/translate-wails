@@ -28,6 +28,7 @@ var (
 	procSendInput                  = modUser32.NewProc("SendInput")
 	procSetWindowsHookExW          = modUser32.NewProc("SetWindowsHookExW")
 	procCallNextHookEx             = modUser32.NewProc("CallNextHookEx")
+	procPostThreadMessageW         = modUser32.NewProc("PostThreadMessageW")
 	procGetAsyncKeyState           = modUser32.NewProc("GetAsyncKeyState")
 	procGetForegroundWindow        = modUser32.NewProc("GetForegroundWindow")
 	procOpenClipboard              = modUser32.NewProc("OpenClipboard")
@@ -39,12 +40,13 @@ var (
 	procGetClipboardSequenceNumber = modUser32.NewProc("GetClipboardSequenceNumber")
 	procIsWindowVisible            = modUser32.NewProc("IsWindowVisible")
 
-	procGlobalAlloc   = modKernel32.NewProc("GlobalAlloc")
-	procGlobalFree    = modKernel32.NewProc("GlobalFree")
-	procGlobalLock    = modKernel32.NewProc("GlobalLock")
-	procGlobalUnlock  = modKernel32.NewProc("GlobalUnlock")
-	procGlobalSize    = modKernel32.NewProc("GlobalSize")
-	procRtlMoveMemory = modKernel32.NewProc("RtlMoveMemory")
+	procGlobalAlloc        = modKernel32.NewProc("GlobalAlloc")
+	procGlobalFree         = modKernel32.NewProc("GlobalFree")
+	procGlobalLock         = modKernel32.NewProc("GlobalLock")
+	procGlobalUnlock       = modKernel32.NewProc("GlobalUnlock")
+	procGlobalSize         = modKernel32.NewProc("GlobalSize")
+	procRtlMoveMemory      = modKernel32.NewProc("RtlMoveMemory")
+	procGetCurrentThreadId = modKernel32.NewProc("GetCurrentThreadId")
 
 	procDwmSetWindowAttribute = modDwmapi.NewProc("DwmSetWindowAttribute")
 
@@ -67,14 +69,16 @@ const (
 	vkT         = 0x54
 	wmHotkey    = 0x0312
 
-	// Low-level keyboard hook (WH_KEYBOARD_LL) for the focus-scoped Win+,
-	// settings accelerator. See kbdhook.go.
+	// Low-level keyboard hook (WH_KEYBOARD_LL): Win+T trigger and the
+	// focus-scoped Win+, settings accelerator. See kbdhook.go.
 	whKeyboardLl  = 13
 	llkhfInjected = 0x10
+	llkhfUp       = 0x80
 	wmKeydown     = 0x0100
 	wmKeyup       = 0x0101
 	wmSyskeydown  = 0x0104
 	wmSyskeyup    = 0x0105
+	wmAppHotkey   = 0x8001 // WM_APP+1: hook-triggered Win+T -> hotkey thread
 
 	// Windows 11 rounded corners via DWM; the call is a silent no-op on Win10.
 	dwmwaWindowCornerPreference = 33
