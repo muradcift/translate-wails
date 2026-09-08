@@ -89,10 +89,18 @@ var kbdHookProc = syscall.NewCallback(func(nCode uintptr, wParam uintptr, lParam
 			if kb.flags&llkhfInjected == 0 {
 				switch kb.vkCode {
 				case vkT:
-					if winKeyDown() {
-						if kb.flags&llkhfUp != 0 {
-							winTArmed = false
-						} else if !winTArmed {
+					if kb.flags&llkhfUp != 0 {
+						// Reset the repeat-guard on EVERY T release: if Win
+						// was released before T, this event arrives with Win
+						// already up, and a stuck guard silently ate the
+						// NEXT Win+T (no trigger, no mask -> Start opened).
+						winTArmed = false
+						if winKeyDown() {
+							return 1 // release of a swallowed Win+T press
+						}
+						// Orphan T-up after Win release: pass it through.
+					} else if winKeyDown() {
+						if !winTArmed {
 							winTArmed = true
 							winComboSwallowed = true
 							sendMenuMaskKey()
@@ -102,16 +110,23 @@ var kbdHookProc = syscall.NewCallback(func(nCode uintptr, wParam uintptr, lParam
 						}
 						return 1 // swallow: the shell's taskbar-cycle must not fire
 					}
+					// Plain T (typing) falls through to the hook chain.
+
 				case vkLwin, vkRwin:
-					// Start-menu masking, AHK-style. NEVER swallow the Win
-					// key-up outright: the shell's internal Win state then
-					// desyncs (it believes Win is still held) and Start
-					// opens intermittently on later presses. Instead:
-					// swallow the real up, inject a fresh mask key, and
-					// re-inject the Win-up so the shell sees
-					// [..., mask, Win-up] in the right order with a
-					// consistent state.
-					if kb.flags&llkhfUp != 0 && winComboSwallowed {
+					if kb.flags&llkhfUp == 0 {
+						// Fresh Win press: whatever is left over belongs to a
+						// gesture that is definitely over.
+						winComboSwallowed = false
+						winTArmed = false
+					} else if winComboSwallowed {
+						// Start-menu masking, AHK-style. NEVER swallow the
+						// Win key-up outright: the shell's internal Win state
+						// then desyncs (it believes Win is still held) and
+						// Start opens intermittently on later presses.
+						// Instead: swallow the real up, inject a fresh mask
+						// key, and re-inject the Win-up so the shell sees
+						// [..., mask, Win-up] in the right order with a
+						// consistent state.
 						winComboSwallowed = false
 						sendMenuMaskKey()
 						sendKey(uint16(kb.vkCode), true)
