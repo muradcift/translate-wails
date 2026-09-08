@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Translator</title>
+    <style>
+      * { box-sizing: border-box; }
+      textarea, button, input { font-family: inherit; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+        background: linear-gradient(160deg, #1b1b22 0%, #141419 60%, #101014 100%);
+        color: #f2f2f5;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      #titlebar { height: 28px; flex: none; -webkit-app-region: drag; --wails-draggable: drag; user-select: none; }
+      #langbar { display: flex; align-items: center; justify-content: space-between; padding: 2px 28px 10px; flex: none; }
+      .dd { position: relative; }
+      .dd-btn {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border: none;
+        background: transparent;
+        color: #f2f2f5;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 6px 4px;
+        cursor: pointer;
+        outline: none;
+        border-radius: 8px;
+      }
+      .dd-btn:hover { background: rgba(255, 255, 255, 0.06); }
+      .dd-btn .chev { color: #8e8e96; display: inline-flex; align-items: center; }
+      .dd-list {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        min-width: 220px;
+        max-height: 330px;
+        background: rgba(36, 36, 44, 0.97);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 14px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+        padding: 0;
+        z-index: 50;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      #ddTo .dd-list { left: auto; right: 0; }
+      .dd-list[hidden] { display: none; }
+      .dd-searchwrap {
+        flex: none;
+        background: #26262e;
+        padding: 8px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 13px 13px 0 0;
+        z-index: 2;
+      }
+      .dd-items {
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 6px;
+        scrollbar-gutter: stable;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255,255,255,0.25) transparent;
+      }
+      .dd-items::-webkit-scrollbar { width: 10px; }
+      .dd-items::-webkit-scrollbar-thumb {
+        background-color: rgba(255, 255, 255, 0.16);
+        border-radius: 8px;
+        border: 3px solid transparent;
+        background-clip: content-box;
+        min-height: 40px;
+      }
+      .dd-items::-webkit-scrollbar-thumb:hover {
+        background-color: rgba(90, 162, 255, 0.6);
+        border: 3px solid transparent;
+        background-clip: content-box;
+      }
+      .dd-items::-webkit-scrollbar-thumb:active {
+        background-color: rgba(90, 162, 255, 0.85);
+        border: 3px solid transparent;
+        background-clip: content-box;
+      }
+      .dd-items::-webkit-scrollbar-track { background: transparent; }
+      .dd-items::-webkit-scrollbar-corner { background: transparent; }
+      .dd-search {
+        width: 100%;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        outline: none;
+        background: #1e1e26;
+        color: #f2f2f5;
+        font-size: 13px;
+        border-radius: 9px;
+        padding: 8px 10px;
+        margin: 0;
+      }
+      .dd-search::placeholder { color: #6e6e76; }
+      textarea::-webkit-scrollbar, #out::-webkit-scrollbar { width: 10px; }
+      textarea::-webkit-scrollbar-thumb, #out::-webkit-scrollbar-thumb {
+        background-color: rgba(255, 255, 255, 0.16);
+        border-radius: 8px;
+        border: 3px solid transparent;
+        background-clip: content-box;
+        min-height: 40px;
+      }
+      textarea::-webkit-scrollbar-thumb:hover, #out::-webkit-scrollbar-thumb:hover {
+        background-color: rgba(90, 162, 255, 0.6);
+        border: 3px solid transparent;
+        background-clip: content-box;
+      }
+      textarea::-webkit-scrollbar-thumb:active, #out::-webkit-scrollbar-thumb:active {
+        background-color: rgba(90, 162, 255, 0.85);
+        border: 3px solid transparent;
+        background-clip: content-box;
+      }
+      textarea::-webkit-scrollbar-track, #out::-webkit-scrollbar-track { background: transparent; }
+      textarea::-webkit-scrollbar-corner, #out::-webkit-scrollbar-corner { background: transparent; }
+      .dd-item {
+        padding: 8px 12px;
+        border-radius: 9px;
+        font-size: 14px;
+        color: #e8e8ee;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .dd-item:hover { background: rgba(255, 255, 255, 0.08); }
+      .dd-item.selected { background: rgba(10, 132, 255, 0.16); color: #fff; }
+      .dd-item.selected::after { content: "✓"; float: right; color: #5aa2ff; }
+      main { position: relative; display: flex; gap: 12px; padding: 0 20px 20px; flex: 1; min-height: 0; }
+      .pane {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        background: rgba(255, 255, 255, 0.05);
+        -webkit-backdrop-filter: blur(18px);
+        backdrop-filter: blur(18px);
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 16px;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+        padding: 18px 12px 10px 20px;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+      }
+      textarea {
+        flex: 1;
+        display: block;
+        width: 100%;
+        min-height: 0;
+        border: none;
+        outline: none;
+        resize: none;
+        background: transparent;
+        color: #f2f2f5;
+        font-size: 21px;
+        line-height: 1.45;
+        padding-right: 8px;
+        scrollbar-gutter: stable;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+      }
+      textarea::placeholder { color: #6e6e76; }
+      #out {
+        flex: 1;
+        display: block;
+        width: 100%;
+        min-height: 0;
+        overflow-y: auto;
+        font-size: 21px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding-right: 8px;
+        scrollbar-gutter: stable;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+      }
+      #out.placeholder { color: #6e6e76; }
+      .foot { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 32px; color: #8e8e96; font-size: 12px; }
+      .pane:last-child .foot { justify-content: space-between; padding: 2px 4px 0; }
+      #swap {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 10;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: #2a2a33;
+        color: #e8e8ee;
+        font-size: 18px;
+        cursor: pointer;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+      }
+      #swap:hover { background: #34333e; }
+      #copybtn {
+        border: none;
+        background: transparent;
+        color: #8e8e96;
+        cursor: pointer;
+        padding: 6px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+      }
+      #copybtn:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+      .error { color: #f28b82 !important; }
+    </style>
+  </head>
+  <body>
+    <div id="titlebar"></div>
+    <div id="langbar">
+      <div class="dd" id="ddFrom">
+        <button class="dd-btn" id="fromBtn"><span id="fromLabel"></span><span class="chev"><svg width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 1l4 4 4-4"/></svg></span></button>
+        <div class="dd-list" id="fromList" hidden></div>
+      </div>
+      <div class="dd" id="ddTo">
+        <button class="dd-btn" id="toBtn"><span id="toLabel"></span><span class="chev"><svg width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 1l4 4 4-4"/></svg></span></button>
+        <div class="dd-list" id="toList" hidden></div>
+      </div>
+    </div>
+    <main>
+      <div class="pane">
+        <textarea id="in" placeholder="Type or paste text here…" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+        <div class="foot"><span id="count"></span></div>
+      </div>
+      <button id="swap" title="Swap">⇅</button>
+      <div class="pane">
+        <div id="out" class="placeholder">Translation will appear here…</div>
+        <div class="foot">
+          <span id="status"></span>
+          <button id="copybtn" title="Copy translation">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="2"/><path d="M10.5 5.5v-2a2 2 0 0 0-2-2h-5a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h2"/></svg>
+          </button>
+        </div>
+      </div>
+    </main>
+    <script src="./src/main.js" type="module"></script>
+  </body>
+</html>

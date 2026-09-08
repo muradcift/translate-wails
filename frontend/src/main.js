@@ -1,0 +1,273 @@
+import { LANGUAGES } from "./languages.js";
+import { EventsOn, WindowHide } from "../wailsjs/runtime/runtime.js";
+
+// Wails injects `window.runtime` and `window.go` itself in the production
+// build; under plain `vite dev` they don't exist, so every bridge call below
+// is guarded and becomes a harmless no-op there.
+function hasRuntime() {
+  return typeof window !== "undefined" && !!window.runtime;
+}
+
+function appBinding() {
+  return window.go && window.go.main && window.go.main.App;
+}
+
+function hideWindow() {
+  if (hasRuntime()) WindowHide();
+}
+
+function onBridgeEvent(name, cb) {
+  if (hasRuntime()) EventsOn(name, cb);
+}
+
+function translateBridge(text, source, target) {
+  return appBinding().TranslateText(text, source, target);
+}
+
+function copyBridge(text) {
+  return appBinding().CopyText(text);
+}
+
+(() => {
+  const input = document.getElementById("in");
+  const out = document.getElementById("out");
+  const count = document.getElementById("count");
+  const status = document.getElementById("status");
+
+  // Raycast tarzı: pencere düğmesi yok, Esc gizler, hotkey geri getirir.
+  // Açık dil menüsü varsa Esc önce onu kapatır.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (closeOpenDropdown()) return;
+      hideWindow();
+    }
+  });
+
+  // Özel dil menüleri (native select popup'u stillenemediği için).
+  let openDD = null;
+  function closeOpenDropdown() {
+    if (!openDD) return false;
+    openDD.list.hidden = true;
+    openDD = null;
+    return true;
+  }
+  document.addEventListener("click", () => closeOpenDropdown());
+
+  function buildDropdown(btnId, listId, labelId, items, initial) {
+    const btn = document.getElementById(btnId);
+    const list = document.getElementById(listId);
+    const label = document.getElementById(labelId);
+    const dd = {
+      list,
+      value: initial,
+      set(code) {
+        dd.value = code;
+        const it = items.find((l) => l.code === code) || items[0];
+        label.textContent = it.name;
+        for (const el of list.querySelectorAll(".dd-item")) {
+          el.classList.toggle("selected", el.dataset.code === code);
+        }
+      },
+    };
+    const searchWrap = document.createElement("div");
+    searchWrap.className = "dd-searchwrap";
+    const search = document.createElement("input");
+    search.className = "dd-search";
+    search.placeholder = "Search...";
+    search.autocomplete = "off";
+    search.spellcheck = false;
+    search.addEventListener("click", (e) => e.stopPropagation());
+    search.addEventListener("keydown", (e) => e.stopPropagation());
+    searchWrap.appendChild(search);
+    list.appendChild(searchWrap);
+    const itemsBox = document.createElement("div");
+    itemsBox.className = "dd-items";
+    list.appendChild(itemsBox);
+    const itemEls = [];
+    for (const lang of items) {
+      const el = document.createElement("div");
+      el.className = "dd-item";
+      el.textContent = lang.name;
+      el.dataset.code = lang.code;
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        dd.set(lang.code);
+        closeOpenDropdown();
+        updateSpellcheck();
+        schedule();
+      });
+      itemsBox.appendChild(el);
+      itemEls.push(el);
+    }
+    search.addEventListener("input", () => {
+      const q = search.value.trim().toLowerCase();
+      for (const el of itemEls) {
+        el.style.display = !q || el.textContent.toLowerCase().includes(q) ? "" : "none";
+      }
+    });
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = list.hidden;
+      closeOpenDropdown();
+      if (willOpen) {
+        search.value = "";
+        for (const el of itemEls) el.style.display = "";
+        list.hidden = false;
+        openDD = dd;
+        setTimeout(() => search.focus(), 0);
+      }
+    });
+    dd.set(initial);
+    return dd;
+  }
+
+  // Yazım denetimi seçili dile uyar: açık kaynak + çeviri sonucu
+  // belli değilse kapalı (cihaz sözlüğü İngilizceyi çizerdi).
+  let lastDetected = null;
+  // Chromium sözlük kodları (sözlüğü olmayan dile null → denetim kapalı).
+  function dictLang(code) {
+    if (code === "en") return "en-US";
+    if (code === "pt") return "pt-BR";
+    if (code === "ar" || code === "ja" || code === "zh-CN" || code === "az") return null;
+    return code;
+  }
+  function updateSpellcheck() {
+    const raw = fromSel.value === "auto" ? lastDetected : fromSel.value;
+    const src = raw ? dictLang(raw) : null;
+    if (src) {
+      input.spellcheck = true;
+      input.lang = src;
+    } else {
+      input.spellcheck = false;
+      input.removeAttribute("lang");
+    }
+  }
+
+  const fromSel = buildDropdown("fromBtn", "fromList", "fromLabel", LANGUAGES, "auto");
+  const toSel = buildDropdown(
+    "toBtn",
+    "toList",
+    "toLabel",
+    LANGUAGES.filter((l) => l.code !== "auto"),
+    "tr",
+  );
+
+  document.getElementById("swap").addEventListener("click", () => {
+    if (fromSel.value === "auto") return;
+    const s = fromSel.value;
+    fromSel.set(toSel.value);
+    toSel.set(s);
+    updateSpellcheck();
+    schedule();
+  });
+
+  let timer = null;
+  let seq = 0;
+  const DEBOUNCE_MS = 300;
+  const MIN_INTERVAL = 800;
+  const RETRY_DELAY = 1500;
+  let lastKey = "";
+  let lastCallAt = 0;
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(() => doRun(), DEBOUNCE_MS);
+  }
+
+  function isRateLimit(err) {
+    if (err && err.code === "RATE_LIMIT") return true;
+    const msg = err instanceof Error ? err.message : String(err == null ? "" : err);
+    return /Rate limited/i.test(msg);
+  }
+
+  function updateCount() {
+    const len = input.value.length;
+    const words = input.value.trim() ? input.value.trim().split(/\s+/).length : 0;
+    count.textContent = `${words} Words • ${len} Characters`;
+  }
+
+  async function doRun(retry = 0, seqId = null) {
+    const text = input.value.trim();
+    updateCount();
+    if (!text) {
+      out.textContent = "Translation will appear here…";
+      out.classList.remove("error");
+      out.classList.add("placeholder");
+      status.textContent = "";
+      return;
+    }
+    const key = `${fromSel.value}|${toSel.value}|${text}`;
+    if (retry === 0) {
+      if (key === lastKey) return;
+      if (seqId === null) seqId = ++seq;
+      const wait = MIN_INTERVAL - (Date.now() - lastCallAt);
+      if (wait > 0) {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (seqId === seq) doRun(0, seqId);
+        }, wait);
+        return;
+      }
+    } else if (seqId !== seq) {
+      return;
+    }
+    lastCallAt = Date.now();
+    status.textContent = retry > 0 ? "Rate limited, retrying…" : "Translating…";
+    try {
+      const r = await translateBridge(text, fromSel.value, toSel.value);
+      if (seqId !== seq) return;
+      out.textContent = r.translatedText;
+      out.classList.remove("error");
+      out.classList.remove("placeholder");
+      status.textContent = "";
+      lastKey = key;
+      if (r.detectedSource && r.detectedSource !== lastDetected) {
+        lastDetected = r.detectedSource;
+        updateSpellcheck();
+      }
+    } catch (err) {
+      if (seqId !== seq) return;
+      if (isRateLimit(err) && retry < 2) {
+        status.textContent = "Rate limited, retrying…";
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (seqId === seq) doRun(retry + 1, seqId);
+        }, RETRY_DELAY);
+        return;
+      }
+      out.textContent = err instanceof Error ? err.message : String(err);
+      out.classList.add("error");
+      out.classList.remove("placeholder");
+      status.textContent = "";
+    }
+  }
+
+  input.addEventListener("input", schedule);
+
+  document.getElementById("copybtn").addEventListener("click", () => {
+    const t = out.textContent;
+    if (t && !out.classList.contains("placeholder")) {
+      Promise.resolve(copyBridge(t)).catch(() => {});
+    }
+  });
+  updateCount();
+  updateSpellcheck();
+
+  // Hotkey: input'u boşaltmıyoruz — eski metin ekranda kalır (flicker ve
+  // stash-restore gecikmesi yok), prefill seçimle gelirse üzerine yazar,
+  // boş gelirse hiçbir şey yapmaz. Pencere Esc ile gizliyken gelen geç
+  // prefill input'u sessizce doldurur; sonraki Alt+T'de hazır olur.
+  onBridgeEvent("hotkey-pressed", () => {
+    status.textContent = "Reading selection…";
+    input.focus();
+  });
+  onBridgeEvent("prefill", (t) => {
+    const sel = (t || "").trim();
+    if (sel && sel !== input.value) {
+      input.value = sel;
+      schedule();
+    }
+    status.textContent = "";
+    updateCount();
+    input.focus();
+  });
+})();
