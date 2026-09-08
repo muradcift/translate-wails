@@ -19,9 +19,11 @@ import (
 //     Translator window is foreground; in every other app the key passes
 //     straight through and the shell's desktop-peek keeps working.
 //
-// After swallowing a Win-combo we mask the next Win key-up: the shell opens
-// the Start menu on a Win release it believes had "no key pressed in
-// between" (the AutoHotkey masking pattern).
+// After swallowing a Win-combo we inject the menu-mask key (an unassigned
+// VK) so the shell never sees a "bare Win tap": once right after the combo,
+// and once right before the Win key-up, which is re-injected by us rather
+// than passed — dropping it desyncs the shell's Win state and makes Start
+// open intermittently (the AutoHotkey masking pattern, done faithfully).
 //
 // The hook lives on its own pinned thread with a message pump: low-level
 // hook callbacks must return within a few ms or Windows silently removes
@@ -101,11 +103,18 @@ var kbdHookProc = syscall.NewCallback(func(nCode uintptr, wParam uintptr, lParam
 						return 1 // swallow: the shell's taskbar-cycle must not fire
 					}
 				case vkLwin, vkRwin:
-					// Mask the Win release after a swallowed combo so the
-					// shell does not pop the Start menu on a release it
-					// believes had no key pressed in between.
+					// Start-menu masking, AHK-style. NEVER swallow the Win
+					// key-up outright: the shell's internal Win state then
+					// desyncs (it believes Win is still held) and Start
+					// opens intermittently on later presses. Instead:
+					// swallow the real up, inject a fresh mask key, and
+					// re-inject the Win-up so the shell sees
+					// [..., mask, Win-up] in the right order with a
+					// consistent state.
 					if kb.flags&llkhfUp != 0 && winComboSwallowed {
 						winComboSwallowed = false
+						sendMenuMaskKey()
+						sendKey(uint16(kb.vkCode), true)
 						return 1
 					}
 				case vkOemComma:
