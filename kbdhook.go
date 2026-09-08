@@ -93,6 +93,7 @@ var kbdHookProc = syscall.NewCallback(func(nCode uintptr, wParam uintptr, lParam
 						} else if !winTArmed {
 							winTArmed = true
 							winComboSwallowed = true
+							sendMenuMaskKey()
 							if hotkeyThreadId != 0 {
 								procPostThreadMessageW.Call(hotkeyThreadId, wmAppHotkey, 0, 0)
 							}
@@ -111,6 +112,7 @@ var kbdHookProc = syscall.NewCallback(func(nCode uintptr, wParam uintptr, lParam
 					if winKeyDown() && translatorIsForeground() {
 						if kb.flags&llkhfUp == 0 {
 							winComboSwallowed = true
+							sendMenuMaskKey()
 							if appRef != nil && appRef.ctx != nil {
 								wailsruntime.EventsEmit(appRef.ctx, "open-settings")
 							}
@@ -129,6 +131,16 @@ func winKeyDown() bool {
 	r1, _, _ := procGetAsyncKeyState.Call(vkLwin)
 	r2, _, _ := procGetAsyncKeyState.Call(vkRwin)
 	return r1&0x8000 != 0 || r2&0x8000 != 0
+}
+
+// sendMenuMaskKey injects a quick tap of an unassigned key right after we
+// swallow a Win-combo. The Start-menu decision happens below the LL hook
+// chain, so merely swallowing the Win key-up is not enough; the shell must
+// SEE some key being used while Win is held (AHK #MenuMaskKey pattern).
+// Our own hook skips it (INJECTED flag) and passes it downstream.
+func sendMenuMaskKey() {
+	sendKey(vkMenuMask, false)
+	sendKey(vkMenuMask, true)
 }
 
 var cachedTranslatorHwnd uintptr

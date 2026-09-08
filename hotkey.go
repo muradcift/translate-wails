@@ -167,8 +167,14 @@ func isWindowVisible(hwnd uintptr) bool {
 }
 
 // foregroundTranslatorWindow restores (if needed) and foregrounds our
-// window. Called after capture, from the hotkey thread that owns the
-// foreground activation right.
+// window. Called after capture, from the hotkey thread.
+//
+// The hook-based trigger swallows Win+T before it reaches any input queue,
+// so this thread has not "received the last input event" and a plain
+// SetForegroundWindow silently fails while another app owns the foreground
+// (the window would pop up BEHIND it). Waivers, least side effects first:
+//  1. AttachThreadInput to the current foreground thread briefly
+//  2. a quick synthesized Alt press (menu-key foreground waiver) + retry
 func foregroundTranslatorWindow(hwnd uintptr) {
 	r, _, _ := procIsIconic.Call(hwnd)
 	if r != 0 {
@@ -176,5 +182,31 @@ func foregroundTranslatorWindow(hwnd uintptr) {
 	} else {
 		procShowWindow.Call(hwnd, swShow)
 	}
-	procSetForegroundWindow.Call(hwnd)
+
+	fg, _, _ := procGetForegroundWindow.Call()
+	if fg == hwnd {
+		return
+	}
+
+	var fgThread uintptr
+	if fg != 0 {
+		fgThread, _, _ = procGetWindowThreadProcessId.Call(fg, 0)
+	}
+	thisThread, _, _ := procGetCurrentThreadId.Call()
+
+	attached := uintptr(0)
+	if fgThread != 0 && fgThread != thisThread {
+		attached, _, _ = procAttachThreadInput.Call(thisThread, fgThread, 1)
+	}
+
+	ok, _, _ := procSetForegroundWindow.Call(hwnd)
+	if ok == 0 {
+		sendKey(vkMenu, false)
+		sendKey(vkMenu, true)
+		procSetForegroundWindow.Call(hwnd)
+	}
+
+	if attached != 0 {
+		procAttachThreadInput.Call(thisThread, fgThread, 0)
+	}
 }

@@ -29,6 +29,7 @@ var (
 	procSetWindowsHookExW          = modUser32.NewProc("SetWindowsHookExW")
 	procCallNextHookEx             = modUser32.NewProc("CallNextHookEx")
 	procPostThreadMessageW         = modUser32.NewProc("PostThreadMessageW")
+	procAttachThreadInput          = modUser32.NewProc("AttachThreadInput")
 	procGetAsyncKeyState           = modUser32.NewProc("GetAsyncKeyState")
 	procGetForegroundWindow        = modUser32.NewProc("GetForegroundWindow")
 	procOpenClipboard              = modUser32.NewProc("OpenClipboard")
@@ -99,13 +100,17 @@ const (
 	cfUnicodetext = 13
 	gmemMoveable  = 0x0002
 
-	vkControl      = 0x11
-	vkMenu         = 0x12
-	vkShift        = 0x10
-	vkLwin         = 0x5B
-	vkRwin         = 0x5C
-	vkOemComma     = 0xBC
-	vkC            = 0x43
+	vkControl  = 0x11
+	vkMenu     = 0x12
+	vkShift    = 0x10
+	vkLwin     = 0x5B
+	vkRwin     = 0x5C
+	vkOemComma = 0xBC
+	vkC        = 0x43
+	// Unassigned VK used as the menu-mask dummy (AHK #MenuMaskKey pattern):
+	// injected after a swallowed Win-combo so the shell sees "a key was used
+	// while Win was held" and does not pop the Start menu on Win release.
+	vkMenuMask     = 0xE8
 	keyeventfKeyup = 0x0002
 	inputKeyboard  = 1
 	inputSize      = 40 // sizeof(INPUT) on 64-bit Windows
