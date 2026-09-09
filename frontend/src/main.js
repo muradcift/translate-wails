@@ -190,14 +190,14 @@ function copyBridge(text) {
 
   let timer = null;
   let seq = 0;
-  const DEBOUNCE_MS = 300;
+  let debounceMs = 300;
   const MIN_INTERVAL = 800;
   const RETRY_DELAY = 1500;
   let lastKey = "";
   let lastCallAt = 0;
   function schedule() {
     clearTimeout(timer);
-    timer = setTimeout(() => doRun(), DEBOUNCE_MS);
+    timer = setTimeout(() => doRun(), debounceMs);
   }
 
   function isRateLimit(err) {
@@ -276,8 +276,90 @@ function copyBridge(text) {
       Promise.resolve(copyBridge(t)).catch(() => {});
     }
   });
+
+  // ---- Settings (persisted in localStorage) ----
+  const THEMES = [
+    { id: "default", name: "Default", swatch: ["#1b1b22", "#5aa2ff", "#f2f2f5"] },
+    { id: "tokyo-night", name: "Tokyo Night", swatch: ["#1a1b26", "#7aa2f7", "#c0caf5"] },
+    { id: "catppuccin", name: "Catppuccin", swatch: ["#1e1e2e", "#b4befe", "#cdd6f4"] },
+    { id: "dracula", name: "Dracula", swatch: ["#282a36", "#bd93f9", "#f8f8f2"] },
+    { id: "nord", name: "Nord", swatch: ["#2e3440", "#88c0d0", "#e5e9f0"] },
+    { id: "gruvbox", name: "Gruvbox", swatch: ["#282828", "#83a598", "#ebdbb2"] },
+    { id: "one-dark", name: "One Dark", swatch: ["#282c34", "#61afef", "#d7dae0"] },
+  ];
+  const DEBOUNCE_OPTIONS = [150, 300, 500, 800];
+
+  function loadSettings() {
+    try {
+      const raw = JSON.parse(localStorage.getItem("settings") || "{}");
+      return {
+        debounce: DEBOUNCE_OPTIONS.includes(raw.debounce) ? raw.debounce : 300,
+        theme: THEMES.some((t) => t.id === raw.theme) ? raw.theme : "default",
+      };
+    } catch {
+      return { debounce: 300, theme: "default" };
+    }
+  }
+  const appSettings = loadSettings();
+  debounceMs = appSettings.debounce;
+  function saveSettings() {
+    try {
+      localStorage.setItem("settings", JSON.stringify(appSettings));
+    } catch {}
+  }
+  function applyTheme(id) {
+    document.documentElement.dataset.theme = id;
+  }
+
+  const segButtons = [];
+  const themeButtons = [];
+  function syncSettingsUI() {
+    for (const { b, ms } of segButtons) {
+      b.classList.toggle("selected", appSettings.debounce === ms);
+    }
+    for (const { b, id } of themeButtons) {
+      b.classList.toggle("selected", appSettings.theme === id);
+    }
+  }
+  function buildSettingsUI() {
+    const seg = document.getElementById("debounceSeg");
+    for (const ms of DEBOUNCE_OPTIONS) {
+      const b = document.createElement("button");
+      b.className = "seg-btn";
+      b.textContent = `${ms} ms`;
+      b.addEventListener("click", () => {
+        appSettings.debounce = ms;
+        debounceMs = ms;
+        saveSettings();
+        syncSettingsUI();
+      });
+      seg.appendChild(b);
+      segButtons.push({ b, ms });
+    }
+    const grid = document.getElementById("themeGrid");
+    for (const t of THEMES) {
+      const b = document.createElement("button");
+      b.className = "theme-opt";
+      b.innerHTML =
+        `<span class="swatch">` +
+        t.swatch.map((c) => `<i style="background:${c}"></i>`).join("") +
+        `</span><span>${t.name}</span>`;
+      b.addEventListener("click", () => {
+        appSettings.theme = t.id;
+        applyTheme(t.id);
+        saveSettings();
+        syncSettingsUI();
+      });
+      grid.appendChild(b);
+      themeButtons.push({ b, id: t.id });
+    }
+    syncSettingsUI();
+  }
+
   updateCount();
   updateSpellcheck();
+  applyTheme(appSettings.theme);
+  buildSettingsUI();
 
   // Hotkey: input'u boşaltmıyoruz — eski metin ekranda kalır (flicker ve
   // stash-restore gecikmesi yok), prefill seçimle gelirse üzerine yazar,

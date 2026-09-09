@@ -5,7 +5,7 @@ Electron sürümü (`../translate-app`) donduruldu; aktif geliştirme burada.
 ## Ürün (değişmez istekler)
 
 - Klasik çevirmen düzeni: üstte dil dropdown'ları + swap, solda input, sağda output.
-- Aşırı sade: dil + input + output. Geçmiş/TTS/ayar yok.
+- Aşırı sade: dil + input + output. Ayarlar yalnız ikisi: debounce süresi (150/300/500/800ms) + renk teması (Default/Tokyo Night/Catppuccin/Dracula/Nord/Gruvbox/One Dark; CSS değişkenleriyle). Win+, panelinde; localStorage'da kalıcı.
 - Keyless Google endpoint, API anahtarı yok. Yazarken anında çeviri (300ms debounce).
 - `Win+T` her yerden pencereyi açar + seçili metni doldurur. KAYIT YOLU ÇALIŞMAZ: kabuk Win+T'yi tutuyor (`RegisterHotKey(MOD_WIN,T)` → "Hot key is already registered", prob ile saha-doğrulandı; MOD_ALT serbest). Birincil tetik kbdhook.go'daki LL hook (tuşu yutar → `wmAppHotkey` → hotkey thread); RegisterHotKey sadece kombinasyonun boş olduğu makinelerde yedek. Yutulan kombinasyonlardan sonra Win-up maskelenir (Start menü açılmasın).
 - `Win+,` uygulamaya odaklıyken ayar panelini aç/kapat (aynı LL hook; odak dışında tuş sisteme bırakılır, Peek bozulmaz). Panel içeriği SONRADAN belirlenecek — şimdilik boş iskelet.
@@ -28,7 +28,7 @@ Electron sürümü (`../translate-app`) donduruldu; aktif geliştirme burada.
 - `foregroundTranslatorWindow` (hotkey.go) ön-plan muafiyetleri ŞART: hook tetiği tuşu kuyruğa girmeden yuttuğu için thread "son giriş olayını almış" sayılmaz → `SetForegroundWindow` başka uygulama ön plandayken sessizce başarısız olur (pencere ARKADA kalır). Sırayla: AttachThreadInput(fg thread) → başarısızsa sentetik Alt vuruşu + tekrar dene.
 - `selection.go` — pano tabanlı seçim yakalama (max 5000 rune): pano snapshot (metin + sequence number) → `SendInput` Ctrl+C (basılı Alt/Shift/Win önce synthetically bırakılır) → sequence number poll (≤400ms, kör 250ms sleep yok) → oku → eski metni restore et. UIA YOK (bkz. Gotchas). PowerShell YOK.
 - `clipboard.go`, `win32.go` — ham Win32 (`x/sys` only, cgo/gcc YOK). `GetClipboardSequenceNumber` kopyalama başarı testi için.
-- `frontend/` — Electron'dan birebir port (düz JS + Vite build). Bridge: `window.go.main.App.*`, `window.runtime.EventsOn/WindowHide`. Hotkey akışı: `hotkey-pressed` input'u TEMİZLEMEZ (eski metin ekranda kalır — flicker/stash gecikmesi yok), `prefill` seçimle gelirse üzerine yazar, boşsa dokunmaz. Swap: diller değişir + output metni input'a taşınıp yeni çiftle çevrilir (eski input düşer); kaynak Detect language ise algılanan dil hedefe gider (algılanan yoksa swap no-op).
+- `frontend/` — Electron'dan birebir port (düz JS + Vite build). Bridge: `window.go.main.App.*`, `window.runtime.EventsOn/WindowHide`. Hotkey akışı: `hotkey-pressed` input'u TEMİZLEMEZ (eski metin ekranda kalır — flicker/stash gecikmesi yok), `prefill` seçimle gelirse üzerine yazar, boşsa dokunmaz. Swap: diller değişir + output metni input'a taşınıp yeni çiftle çevrilir (eski input düşer); kaynak Detect language ise algılanan dil hedefe gider (algılanan yoksa swap no-op). Ayarlar (debounce + tema) localStorage'da; temalar `index.html`'deki CSS değişken bloklarıyla (`[data-theme=...]`).
 
 ## Gotchas
 
