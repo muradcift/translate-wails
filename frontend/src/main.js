@@ -40,6 +40,7 @@ function copyBridge(text) {
     if (e.key === "Escape") {
       if (closeSettings()) return;
       if (closeOpenDropdown()) return;
+      stopSpeaking();
       hideWindow();
     }
   });
@@ -213,6 +214,7 @@ function copyBridge(text) {
   }
 
   async function doRun(retry = 0, seqId = null) {
+    stopSpeaking();
     const text = input.value.trim();
     updateCount();
     if (!text) {
@@ -361,11 +363,91 @@ function copyBridge(text) {
   applyTheme(appSettings.theme);
   buildSettingsUI();
 
+  // ---- Text-to-speech (Web Speech API; hides itself where unavailable,
+  // e.g. Linux WebKitGTK builds without speech support) ----
+  const speechAvailable = "speechSynthesis" in window;
+  let speakingBtn = null;
+  let voices = [];
+
+  function ttsLang(code) {
+    if (!code) return null;
+    if (code === "en") return "en-US";
+    if (code === "pt") return "pt-BR";
+    if (code.includes("-")) return code; // zh-CN, zh-TW, pt-BR …
+    return `${code}-${code.toUpperCase()}`; // tr -> tr-TR, de -> de-DE …
+  }
+
+  function refreshVoices() {
+    voices = window.speechSynthesis.getVoices() || [];
+  }
+
+  function pickVoice(lang) {
+    if (!voices.length) refreshVoices();
+    const l = lang.toLowerCase();
+    const base = l.split("-")[0];
+    return (
+      voices.find((v) => v.lang.replace("_", "-").toLowerCase() === l) ||
+      voices.find((v) => v.lang.replace("_", "-").toLowerCase().startsWith(base)) ||
+      null
+    );
+  }
+
+  function setSpeakingUI(btn) {
+    speakingBtn = btn;
+    for (const id of ["speakIn", "speakOut"]) {
+      document.getElementById(id).classList.toggle("speaking", document.getElementById(id) === btn);
+    }
+  }
+
+  function stopSpeaking() {
+    if (!speechAvailable) return;
+    window.speechSynthesis.cancel();
+    setSpeakingUI(null);
+  }
+
+  function speak(text, langCode, btn) {
+    if (!speechAvailable || !text) return;
+    if (speakingBtn === btn) {
+      stopSpeaking();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    const lang = ttsLang(langCode);
+    if (lang) {
+      u.lang = lang;
+      const v = pickVoice(lang);
+      if (v) u.voice = v;
+    }
+    u.onend = () => setSpeakingUI(null);
+    u.onerror = () => setSpeakingUI(null);
+    setSpeakingUI(btn);
+    window.speechSynthesis.speak(u);
+  }
+
+  if (speechAvailable) {
+    refreshVoices();
+    window.speechSynthesis.onvoiceschanged = refreshVoices;
+    for (const id of ["speakIn", "speakOut"]) document.getElementById(id).hidden = false;
+    document.getElementById("speakIn").addEventListener("click", () => {
+      const t = input.value.trim();
+      const lang = fromSel.value === "auto" ? lastDetected : fromSel.value;
+      speak(t, lang, document.getElementById("speakIn"));
+    });
+    document.getElementById("speakOut").addEventListener("click", () => {
+      const t = out.textContent;
+      if (!t || out.classList.contains("placeholder") || out.classList.contains("error")) return;
+      speak(t, toSel.value, document.getElementById("speakOut"));
+    });
+  }
+
   // Hotkey: input'u boşaltmıyoruz — eski metin ekranda kalır (flicker ve
   // stash-restore gecikmesi yok), prefill seçimle gelirse üzerine yazar,
-  // boş gelirse hiçbir şey yapmaz. Pencere Esc ile gizliyken gelen geç
-  // prefill input'u sessizce doldurur; sonraki Alt+T'de hazır olur.
+  // boş gelirse hiçbir şey yapmaz. Yeni metin akarken konuşma kesilir.
+  // Pencere Esc ile gizliyken gelen geç prefill input'u sessizce doldurur;
+  // sonraki Win+T'de hazır olur.
   onBridgeEvent("hotkey-pressed", () => {
+    stopSpeaking();
     status.textContent = "Reading selection…";
     input.focus();
   });

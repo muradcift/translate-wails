@@ -340,7 +340,9 @@
       }
       #out.placeholder { color: var(--text-faint); }
       .foot { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 32px; color: var(--text-dim); font-size: 12px; }
+      .pane:first-child .foot { justify-content: space-between; padding: 2px 4px 0; }
       .pane:last-child .foot { justify-content: space-between; padding: 2px 4px 0; }
+      .footbtns { display: flex; align-items: center; gap: 2px; }
       #swap {
         position: absolute;
         left: 50%;
@@ -358,7 +360,7 @@
         box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
       }
       #swap:hover { background: var(--swap-hover); }
-      #copybtn {
+      #copybtn, .speakbtn {
         border: none;
         background: transparent;
         color: var(--text-dim);
@@ -368,7 +370,8 @@
         display: flex;
         align-items: center;
       }
-      #copybtn:hover { background: var(--hover); color: var(--text); }
+      #copybtn:hover, .speakbtn:hover { background: var(--hover); color: var(--text); }
+      .speakbtn.speaking { color: var(--accent); }
       .error { color: var(--error) !important; }
       #settings {
         position: fixed;
@@ -478,16 +481,26 @@
     <main>
       <div class="pane">
         <textarea id="in" placeholder="Type or paste text here…" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
-        <div class="foot"><span id="count"></span></div>
+        <div class="foot">
+          <button id="speakIn" class="speakbtn" title="Read input aloud" hidden>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 2.5 5.5 5.5H3.5A1.5 1.5 0 0 0 2 7v2a1.5 1.5 0 0 0 1.5 1.5h2l3 3z"/><path d="M11.2 5.8a3.2 3.2 0 0 1 0 4.4"/></svg>
+          </button>
+          <span id="count"></span>
+        </div>
       </div>
       <button id="swap" title="Swap">⇅</button>
       <div class="pane">
         <div id="out" class="placeholder">Translation will appear here…</div>
         <div class="foot">
           <span id="status"></span>
-          <button id="copybtn" title="Copy translation">
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="2"/><path d="M10.5 5.5v-2a2 2 0 0 0-2-2h-5a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h2"/></svg>
-          </button>
+          <div class="footbtns">
+            <button id="speakOut" class="speakbtn" title="Read translation aloud" hidden>
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 2.5 5.5 5.5H3.5A1.5 1.5 0 0 0 2 7v2a1.5 1.5 0 0 0 1.5 1.5h2l3 3z"/><path d="M11.2 5.8a3.2 3.2 0 0 1 0 4.4"/></svg>
+            </button>
+            <button id="copybtn" title="Copy translation">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="2"/><path d="M10.5 5.5v-2a2 2 0 0 0-2-2h-5a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h2"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </main>
