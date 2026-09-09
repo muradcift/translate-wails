@@ -372,7 +372,7 @@ function copyBridge(text) {
   const speechAvailable = "speechSynthesis" in window;
   let speakingBtn = null;
   let currentAudio = null;
-  const prefetches = [];
+  let speechToken = 0; // bumped on stop: invalidates in-flight async chains
   let voices = [];
 
   function ttsLang(code) {
@@ -433,7 +433,7 @@ function copyBridge(text) {
   }
 
   function stopSpeaking() {
-    prefetches.length = 0;
+    speechToken++;
     if (currentAudio) {
       const a = currentAudio;
       currentAudio = null;
@@ -463,34 +463,92 @@ function copyBridge(text) {
     window.speechSynthesis.speak(u);
   }
 
-  function playGoogleQueue(btn, urls, i, text, lang) {
-    if (i >= urls.length) {
+  function ttsUnavailableNotice() {
+    status.textContent = "Google TTS unavailable — using local voice";
+    setTimeout(() => {
+      if (status.textContent.startsWith("Google TTS")) status.textContent = "";
+    }, 4000);
+  }
+
+  // Fetch one chunk with the page's fetch(): we get the HTTP status, so a
+  // failure is diagnosable, and playback runs from a blob (no mid-play
+  // network). Returns null when the Google path is unavailable.
+  async function fetchChunkBlob(url) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) {
+        console.warn("TTS HTTP", r.status);
+        return null;
+      }
+      const b = await r.blob();
+      if (!b.type.startsWith("audio") || b.size < 512) {
+        console.warn("TTS unexpected payload:", b.type, b.size);
+        return null;
+      }
+      return URL.createObjectURL(b);
+    } catch (e) {
+      console.warn("TTS fetch blocked (CORS/network):", e);
+      return null;
+    }
+  }
+
+  function playBlob(url) {
+    return new Promise((resolve) => {
+      const a = new Audio(url);
+      currentAudio = a;
+      const done = () => {
+        if (currentAudio === a) {
+          currentAudio = null;
+          URL.revokeObjectURL(url);
+        }
+        resolve();
+      };
+      a.onended = done;
+      a.onerror = done;
+      a.play().catch(done);
+    });
+  }
+
+  // No-CORS escape hatch: plain audio-element playback of the endpoint URL.
+  // If even this errors, the Google path is genuinely unavailable.
+  function playElementChain(texts, lang, token) {
+    if (token !== speechToken) return;
+    if (!texts.length) {
       setSpeakingUI(null);
       return;
     }
-    const a = new Audio(urls[i]);
+    const a = new Audio(ttsUrl(texts[0], lang));
     currentAudio = a;
     a.onended = () => {
-      if (currentAudio === a) {
-        currentAudio = null;
-        playGoogleQueue(btn, urls, i + 1, text, lang);
-      }
+      if (currentAudio !== a || token !== speechToken) return;
+      currentAudio = null;
+      playElementChain(texts.slice(1), lang, token);
     };
     const fail = () => {
-      if (currentAudio !== a) return;
+      if (currentAudio !== a || token !== speechToken) return;
       currentAudio = null;
-      prefetches.length = 0;
-      if (speechAvailable) window.speechSynthesis.cancel();
-      speakLocal(text, lang);
+      ttsUnavailableNotice();
+      speakLocal(texts.join(" "), lang);
     };
     a.onerror = fail;
     a.play().catch(fail);
-    if (urls[i + 1]) {
-      const p = new Audio(urls[i + 1]);
-      p.preload = "auto";
-      p.load();
-      prefetches.push(p);
+  }
+
+  async function speakChunks(texts, lang) {
+    const token = speechToken;
+    let nextBlob = fetchChunkBlob(ttsUrl(texts[0], lang));
+    for (let i = 0; i < texts.length; i++) {
+      const blobUrl = await nextBlob;
+      if (token !== speechToken) return;
+      if (!blobUrl) {
+        playElementChain(texts.slice(i), lang, token);
+        return;
+      }
+      nextBlob = i + 1 < texts.length ? fetchChunkBlob(ttsUrl(texts[i + 1], lang)) : null;
+      await playBlob(blobUrl);
+      if (token !== speechToken) return;
     }
+    setSpeakingUI(null);
   }
 
   function speak(text, langCode, btn) {
@@ -507,8 +565,7 @@ function copyBridge(text) {
       speakLocal(text, null);
       return;
     }
-    const urls = ttsChunk(text).map((c) => ttsUrl(c, langCode));
-    playGoogleQueue(btn, urls, 0, text, langCode);
+    speakChunks(ttsChunk(text), langCode);
   }
 
   for (const id of ["speakIn", "speakOut"]) document.getElementById(id).hidden = false;
