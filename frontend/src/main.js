@@ -363,10 +363,16 @@ function copyBridge(text) {
   applyTheme(appSettings.theme);
   buildSettingsUI();
 
-  // ---- Text-to-speech (Web Speech API; hides itself where unavailable,
-  // e.g. Linux WebKitGTK builds without speech support) ----
+  // ---- Text-to-speech: keyless Google TTS endpoint, same family as the
+  // translation one. The <audio> element fetches it with the browser's own
+  // identity (real Chrome UA + TLS), so it reads as a genuine browser
+  // request and the Go-side 429 fingerprint problem does not apply.
+  // Local speechSynthesis voices are the fallback for offline / throttled
+  // moments and for when the source language is unknown. ----
   const speechAvailable = "speechSynthesis" in window;
   let speakingBtn = null;
+  let currentAudio = null;
+  const prefetches = [];
   let voices = [];
 
   function ttsLang(code) {
@@ -379,6 +385,10 @@ function copyBridge(text) {
 
   function refreshVoices() {
     voices = window.speechSynthesis.getVoices() || [];
+  }
+  if (speechAvailable) {
+    refreshVoices();
+    window.speechSynthesis.onvoiceschanged = refreshVoices;
   }
 
   function pickVoice(lang) {
@@ -399,19 +409,48 @@ function copyBridge(text) {
     }
   }
 
+  function ttsChunk(text) {
+    // Google TTS serves ~200 chars per request; cut at word boundaries.
+    const chunks = [];
+    let rest = text.trim();
+    while (rest.length > 190) {
+      let cut = rest.lastIndexOf(" ", 190);
+      if (cut < 80) cut = 190;
+      chunks.push(rest.slice(0, cut));
+      rest = rest.slice(cut).trimStart();
+    }
+    if (rest) chunks.push(rest);
+    return chunks;
+  }
+
+  function ttsUrl(text, lang) {
+    return (
+      "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=" +
+      encodeURIComponent(lang) +
+      "&q=" +
+      encodeURIComponent(text)
+    );
+  }
+
   function stopSpeaking() {
-    if (!speechAvailable) return;
-    window.speechSynthesis.cancel();
+    prefetches.length = 0;
+    if (currentAudio) {
+      const a = currentAudio;
+      currentAudio = null;
+      a.onended = null;
+      a.onerror = null;
+      a.pause();
+      a.removeAttribute("src");
+    }
+    if (speechAvailable) window.speechSynthesis.cancel();
     setSpeakingUI(null);
   }
 
-  function speak(text, langCode, btn) {
-    if (!speechAvailable || !text) return;
-    if (speakingBtn === btn) {
-      stopSpeaking();
+  function speakLocal(text, langCode) {
+    if (!speechAvailable) {
+      setSpeakingUI(null);
       return;
     }
-    window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     const lang = ttsLang(langCode);
     if (lang) {
@@ -421,25 +460,67 @@ function copyBridge(text) {
     }
     u.onend = () => setSpeakingUI(null);
     u.onerror = () => setSpeakingUI(null);
-    setSpeakingUI(btn);
     window.speechSynthesis.speak(u);
   }
 
-  if (speechAvailable) {
-    refreshVoices();
-    window.speechSynthesis.onvoiceschanged = refreshVoices;
-    for (const id of ["speakIn", "speakOut"]) document.getElementById(id).hidden = false;
-    document.getElementById("speakIn").addEventListener("click", () => {
-      const t = input.value.trim();
-      const lang = fromSel.value === "auto" ? lastDetected : fromSel.value;
-      speak(t, lang, document.getElementById("speakIn"));
-    });
-    document.getElementById("speakOut").addEventListener("click", () => {
-      const t = out.textContent;
-      if (!t || out.classList.contains("placeholder") || out.classList.contains("error")) return;
-      speak(t, toSel.value, document.getElementById("speakOut"));
-    });
+  function playGoogleQueue(btn, urls, i, text, lang) {
+    if (i >= urls.length) {
+      setSpeakingUI(null);
+      return;
+    }
+    const a = new Audio(urls[i]);
+    currentAudio = a;
+    a.onended = () => {
+      if (currentAudio === a) {
+        currentAudio = null;
+        playGoogleQueue(btn, urls, i + 1, text, lang);
+      }
+    };
+    const fail = () => {
+      if (currentAudio !== a) return;
+      currentAudio = null;
+      prefetches.length = 0;
+      if (speechAvailable) window.speechSynthesis.cancel();
+      speakLocal(text, lang);
+    };
+    a.onerror = fail;
+    a.play().catch(fail);
+    if (urls[i + 1]) {
+      const p = new Audio(urls[i + 1]);
+      p.preload = "auto";
+      p.load();
+      prefetches.push(p);
+    }
   }
+
+  function speak(text, langCode, btn) {
+    if (!text) return;
+    if (speakingBtn === btn) {
+      stopSpeaking();
+      return;
+    }
+    stopSpeaking();
+    setSpeakingUI(btn);
+    if (!langCode) {
+      // Source is Detect language and nothing has been detected yet:
+      // read with the local default voice.
+      speakLocal(text, null);
+      return;
+    }
+    const urls = ttsChunk(text).map((c) => ttsUrl(c, langCode));
+    playGoogleQueue(btn, urls, 0, text, langCode);
+  }
+
+  for (const id of ["speakIn", "speakOut"]) document.getElementById(id).hidden = false;
+  document.getElementById("speakIn").addEventListener("click", () => {
+    const lang = fromSel.value === "auto" ? lastDetected : fromSel.value;
+    speak(input.value.trim(), lang, document.getElementById("speakIn"));
+  });
+  document.getElementById("speakOut").addEventListener("click", () => {
+    const t = out.textContent;
+    if (!t || out.classList.contains("placeholder") || out.classList.contains("error")) return;
+    speak(t, toSel.value, document.getElementById("speakOut"));
+  });
 
   // Hotkey: input'u boşaltmıyoruz — eski metin ekranda kalır (flicker ve
   // stash-restore gecikmesi yok), prefill seçimle gelirse üzerine yazar,
