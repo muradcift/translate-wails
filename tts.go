@@ -1,0 +1,39 @@
+package main
+
+import (
+	"encoding/base64"
+	"fmt"
+	"net/url"
+)
+
+// TTS via the same keyless Google endpoint family as translation, fetched
+// through the same transport (winhttp.go: WinHTTP/SChannel primary,
+// net/http fallback). The WebView2 network layer blocks this endpoint from
+// inside the page, but the Go transport talks to translate.googleapis.com
+// all day for translation, so TTS rides the same wire. The endpoint serves
+// ~200 characters per request; the frontend chunks and plays the returned
+// base64 MP3 pieces sequentially.
+const ttsEndpoint = "https://translate.googleapis.com/translate_tts"
+
+// SpeakTTS returns one TTS chunk as base64-encoded MP3 audio.
+func (a *App) SpeakTTS(text, lang string) (string, error) {
+	if text == "" || lang == "" {
+		return "", fmt.Errorf("TTS: empty text or language")
+	}
+	q := url.Values{}
+	q.Set("ie", "UTF-8")
+	q.Set("client", "gtx")
+	q.Set("tl", lang)
+	q.Set("q", text)
+	status, body, err := httpGet(ttsEndpoint + "?" + q.Encode())
+	if err != nil {
+		return "", fmt.Errorf("TTS network error")
+	}
+	if status != 200 {
+		return "", fmt.Errorf("TTS HTTP %d", status)
+	}
+	if len(body) < 512 {
+		return "", fmt.Errorf("TTS payload too small")
+	}
+	return base64.StdEncoding.EncodeToString(body), nil
+}

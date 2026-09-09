@@ -363,12 +363,13 @@ function copyBridge(text) {
   applyTheme(appSettings.theme);
   buildSettingsUI();
 
-  // ---- Text-to-speech: keyless Google TTS endpoint, same family as the
-  // translation one. The <audio> element fetches it with the browser's own
-  // identity (real Chrome UA + TLS), so it reads as a genuine browser
-  // request and the Go-side 429 fingerprint problem does not apply.
-  // Local speechSynthesis voices are the fallback for offline / throttled
-  // moments and for when the source language is unknown. ----
+  // ---- Text-to-speech: keyless Google TTS via the Go backend. The
+  // WebView2 network layer could not reach translate_tts from inside the
+  // page (fetch and <audio> both failed), so the MP3 is downloaded by the
+  // same Go transport that does the translation (WinHTTP primary) and
+  // arrives as base64; we play it from a blob. Local speechSynthesis
+  // voices are the fallback for offline / throttled moments and for when
+  // the source language is unknown. ----
   const speechAvailable = "speechSynthesis" in window;
   let speakingBtn = null;
   let currentAudio = null;
@@ -423,15 +424,6 @@ function copyBridge(text) {
     return chunks;
   }
 
-  function ttsUrl(text, lang) {
-    return (
-      "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=" +
-      encodeURIComponent(lang) +
-      "&q=" +
-      encodeURIComponent(text)
-    );
-  }
-
   function stopSpeaking() {
     speechToken++;
     if (currentAudio) {
@@ -470,26 +462,24 @@ function copyBridge(text) {
     }, 4000);
   }
 
-  // Fetch one chunk with the page's fetch(): we get the HTTP status, so a
-  // failure is diagnosable, and playback runs from a blob (no mid-play
-  // network). Returns null when the Google path is unavailable.
-  async function fetchChunkBlob(url) {
-    try {
-      const r = await fetch(url);
-      if (!r.ok) {
-        console.warn("TTS HTTP", r.status);
-        return null;
-      }
-      const b = await r.blob();
-      if (!b.type.startsWith("audio") || b.size < 512) {
-        console.warn("TTS unexpected payload:", b.type, b.size);
-        return null;
-      }
-      return URL.createObjectURL(b);
-    } catch (e) {
-      console.warn("TTS fetch blocked (CORS/network):", e);
-      return null;
-    }
+  // One chunk from the Go backend (WinHTTP transport, the same wire the
+  // translation uses) as base64 MP3, played from a blob URL.
+  function speakBridge(text, lang) {
+    const app = appBinding();
+    if (!app) return Promise.reject(new Error("no bridge (plain vite dev?)"));
+    return app.SpeakTTS(text, lang);
+  }
+
+  function b64ToBlobUrl(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
+  }
+
+  async function ttsChunkUrl(text, lang) {
+    const b64 = await speakBridge(text, lang);
+    return b64ToBlobUrl(b64);
   }
 
   function playBlob(url) {
@@ -509,42 +499,24 @@ function copyBridge(text) {
     });
   }
 
-  // No-CORS escape hatch: plain audio-element playback of the endpoint URL.
-  // If even this errors, the Google path is genuinely unavailable.
-  function playElementChain(texts, lang, token) {
-    if (token !== speechToken) return;
-    if (!texts.length) {
-      setSpeakingUI(null);
-      return;
-    }
-    const a = new Audio(ttsUrl(texts[0], lang));
-    currentAudio = a;
-    a.onended = () => {
-      if (currentAudio !== a || token !== speechToken) return;
-      currentAudio = null;
-      playElementChain(texts.slice(1), lang, token);
-    };
-    const fail = () => {
-      if (currentAudio !== a || token !== speechToken) return;
-      currentAudio = null;
-      ttsUnavailableNotice();
-      speakLocal(texts.join(" "), lang);
-    };
-    a.onerror = fail;
-    a.play().catch(fail);
-  }
-
   async function speakChunks(texts, lang) {
     const token = speechToken;
-    let nextBlob = fetchChunkBlob(ttsUrl(texts[0], lang));
+    let next = ttsChunkUrl(texts[0], lang);
     for (let i = 0; i < texts.length; i++) {
-      const blobUrl = await nextBlob;
+      let blobUrl = null;
+      try {
+        blobUrl = await next;
+      } catch (e) {
+        console.warn("TTS bridge failed:", e);
+      }
       if (token !== speechToken) return;
       if (!blobUrl) {
-        playElementChain(texts.slice(i), lang, token);
+        ttsUnavailableNotice();
+        speakLocal(texts.slice(i).join(" "), lang);
         return;
       }
-      nextBlob = i + 1 < texts.length ? fetchChunkBlob(ttsUrl(texts[i + 1], lang)) : null;
+      // Prefetch the next chunk while this one plays.
+      next = i + 1 < texts.length ? ttsChunkUrl(texts[i + 1], lang) : null;
       await playBlob(blobUrl);
       if (token !== speechToken) return;
     }
