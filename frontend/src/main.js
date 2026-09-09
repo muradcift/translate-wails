@@ -169,12 +169,22 @@ function copyBridge(text) {
     "tr",
   );
 
+  // Swap: diller değişir, output metni input'a taşınır ve yeni çiftle
+  // çevrilir — eski input metni düşer. Kaynak Detect language ise algılanan
+  // dil hedefe gider (hiç algılanmadıysa swap anlamsız, dokunma).
   document.getElementById("swap").addEventListener("click", () => {
-    if (fromSel.value === "auto") return;
-    const s = fromSel.value;
-    fromSel.set(toSel.value);
-    toSel.set(s);
+    const from = fromSel.value === "auto" ? lastDetected : fromSel.value;
+    if (!from) return;
+    const to = toSel.value;
+    fromSel.set(to);
+    toSel.set(from);
     updateSpellcheck();
+    if (out.textContent && !out.classList.contains("placeholder") && !out.classList.contains("error")) {
+      input.value = out.textContent;
+      out.textContent = "Translation will appear here…";
+      out.classList.add("placeholder");
+      out.classList.remove("error");
+    }
     schedule();
   });
 
