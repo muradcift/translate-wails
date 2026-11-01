@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	goruntime "runtime"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -53,7 +54,7 @@ func (a *App) startHotkeyLoop() {
 		// must stay alive and pump.
 		procRegisterHotKey.Call(0, hotkeyID, modWin|modNoRepeat, vkT)
 		id, _, _ := procGetCurrentThreadId.Call()
-		hotkeyThreadId = id
+		hotkeyThreadId.Store(id)
 
 		for {
 			r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&msg[0])), 0, 0, 0)
@@ -153,6 +154,7 @@ func hideFromTaskbar(hwnd uintptr) {
 // Package-level EnumWindows callback: syscall.NewCallback has a process-wide
 // cap (~2000), so it must not be created per call.
 var (
+	enumMu        sync.Mutex // guards enumTarget/enumTitleBuf (see findTranslatorWindow)
 	enumTarget    uintptr
 	enumWindowsCb = syscall.NewCallback(enumTranslatorWindowProc)
 	enumMyPid     = uint32(os.Getpid())
@@ -202,7 +204,14 @@ func translatorHwndValid(hwnd uintptr) bool {
 }
 
 // findTranslatorWindow finds our own "Translator" window via EnumWindows.
+// enumTranslatorWindowProc writes package-level state (enumTarget, enumTitleBuf)
+// while running synchronously inside procEnumWindows.Call, and this function
+// can be entered from three threads: the hotkey thread, the startup
+// applyRoundedCorners goroutine, and the LL hook thread via
+// translatorIsForeground. Serialize the whole enumerate+read with enumMu.
 func findTranslatorWindow() uintptr {
+	enumMu.Lock()
+	defer enumMu.Unlock()
 	enumTarget = 0
 	procEnumWindows.Call(enumWindowsCb, 0)
 	return enumTarget

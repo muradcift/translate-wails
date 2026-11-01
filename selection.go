@@ -79,6 +79,7 @@ func readSelectionViaClipboard() string {
 	if !ok {
 		return ""
 	}
+	seqAfter := getClipboardSequenceNumber()
 	s := strings.TrimSpace(after)
 	if s == "" {
 		return ""
@@ -86,7 +87,9 @@ func readSelectionViaClipboard() string {
 	// Restore what was on the clipboard before. Known cost: EmptyClipboard
 	// drops non-text formats (images, file lists) on this path; leaving the
 	// user's selection sitting in the clipboard was judged worse.
-	if before != "" {
+	// Restoring is best-effort: if the clipboard changed since our copy, the
+	// newer content wins.
+	if before != "" && getClipboardSequenceNumber() == seqAfter {
 		_ = setClipboardText(before)
 	}
 	return capSelection(s)

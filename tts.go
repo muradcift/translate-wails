@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
+	"unicode/utf8"
 )
 
 // TTS via the same keyless Google endpoint family as translation, fetched
@@ -16,9 +17,13 @@ import (
 const ttsEndpoint = "https://translate.googleapis.com/translate_tts"
 
 // SpeakTTS returns one TTS chunk as base64-encoded MP3 audio.
+// Text is capped at 1000 runes to avoid oversized requests.
 func (a *App) SpeakTTS(text, lang string) (string, error) {
 	if text == "" || lang == "" {
 		return "", fmt.Errorf("TTS: empty text or language")
+	}
+	if utf8.RuneCountInString(text) > 1000 {
+		return "", fmt.Errorf("TTS: text too long")
 	}
 	q := url.Values{}
 	q.Set("ie", "UTF-8")
