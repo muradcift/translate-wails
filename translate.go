@@ -199,6 +199,9 @@ func translateText(text, source, target string) (TranslationResult, error) {
 		return r, nil
 	}
 
+	if utf8.RuneCountInString(text) > maxChunk*maxChunks {
+		return TranslationResult{}, errors.New("Text is too long. Shorten it to continue.")
+	}
 	chunks := splitIntoChunks(text, maxChunk)
 	if len(chunks) > maxChunks {
 		return TranslationResult{}, errors.New("Text is too long. Shorten it to continue.")

@@ -2,6 +2,7 @@ package main
 
 import (
 	goruntime "runtime"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -43,7 +44,8 @@ var (
 	appRef *App
 
 	// Set by the hotkey thread so the hook can post wmAppHotkey to it.
-	hotkeyThreadId uintptr
+	// Atomic: written by the hotkey thread, read by the LL hook thread.
+	hotkeyThreadId atomic.Uintptr
 
 	// Hook-thread-only state (the callback is serialized on that thread).
 	winTArmed         bool // Win+T currently held: swallow auto-repeats
@@ -79,7 +81,7 @@ func (a *App) startKbdHook() {
 var kbdHookProc = syscall.NewCallback(func(nCode uintptr, wParam uintptr, lParam uintptr) uintptr {
 	if int32(nCode) >= 0 {
 		msg := uint32(wParam)
-		if msg == wmKeydown || msg == wmSyskeydown || msg == wmKeyup || msg == wmSyskeyup {
+		if lParam != 0 && (msg == wmKeydown || msg == wmSyskeydown || msg == wmKeyup || msg == wmSyskeyup) {
 			// Copy the KBDLLHOOKSTRUCT via RtlMoveMemory instead of converting
 			// lParam (a raw uintptr) into a Go pointer — same pattern as
 			// clipboard.go, and it keeps `go vet` happy.
@@ -104,8 +106,8 @@ var kbdHookProc = syscall.NewCallback(func(nCode uintptr, wParam uintptr, lParam
 							winTArmed = true
 							winComboSwallowed = true
 							sendMenuMaskKey()
-							if hotkeyThreadId != 0 {
-								procPostThreadMessageW.Call(hotkeyThreadId, wmAppHotkey, 0, 0)
+							if hotkeyThreadId.Load() != 0 {
+								procPostThreadMessageW.Call(hotkeyThreadId.Load(), wmAppHotkey, 0, 0)
 							}
 						}
 						return 1 // swallow: the shell's taskbar-cycle must not fire

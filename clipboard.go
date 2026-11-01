@@ -85,6 +85,9 @@ func getClipboardText() (string, bool) {
 	if sz < 2 {
 		return "", false
 	}
+	if sz > 1<<27 {
+		return "", false
+	}
 	p, _, _ := procGlobalLock.Call(h)
 	if p == 0 {
 		return "", false
@@ -94,6 +97,9 @@ func getClipboardText() (string, bool) {
 	n := int(sz / 2)
 	if n > 1<<26 {
 		n = 1 << 26
+	}
+	if n <= 0 {
+		return "", false
 	}
 	buf := make([]uint16, n)
 	procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&buf[0])), p, uintptr(n*2))
