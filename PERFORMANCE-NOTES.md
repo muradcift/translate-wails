@@ -10,9 +10,9 @@ Estimates are tagged **(measured)**, **(derived)**, **(guessed)**.
 
 | Area | Before | After | Expected win |
 |---|---|---|---|
-| WinHTTP transport | `WinHttpOpen` + `WinHttpConnect` + request for every call: fresh TCP + TLS handshake per translation/TTS request | package-level session + one connect handle per (host,port,secure), refcounted so handles are never closed while in use; only the request handle is per-call and WinHTTP reuses pooled keep-alive connections | removes ~120-350 ms (guessed) handshake from every request after the first |
+| WinHTTP transport | `WinHttpOpen` + `WinHttpConnect` + request for every call: a fresh TCP + TLS handshake per translation/TTS request | package-level session + one connect handle per (host,port,secure), refcounted so handles are never closed while in use; only the request handle is per-call and WinHTTP reuses pooled keep-alive connections | **measured: only 3.5-12 ms per request on this network** (a system proxy / WARP adds ~85 ms fixed RTT, so the handshake nearly disappears into it). Still strictly better — one less handshake, no new sockets — but this is NOT where the user-visible win came from |
 | Long queries | always GET, `q` percent-encoded into the URL (a 1200-char Turkish chunk is ~2.1 KB of URL, (measured)) | same params, but `POST application/x-www-form-urlencoded` when the encoded URL would exceed 1800 bytes | no URL-length ceiling, fewer proxy/log artefacts; POST verified 200 + identical JSON (measured) |
-| Chunk translation | serial, `time.Sleep(250ms)` between chunks (a 5000-char text paid 1 s of pure sleep) | first chunk alone (so `auto` detection is stable), then remaining chunks with concurrency 3, 40 ms per-wave stagger, in-order assembly, cancel on first failure | 5 chunks: ~1.3 s -> ~0.4 s (derived); 20 chunks: ~5 s -> ~1.6 s (derived) |
+| Chunk translation | serial, `time.Sleep(250ms)` between chunks (a 5000-char text paid 1 s of pure sleep) | first chunk alone (so `auto` detection is stable), then remaining chunks with concurrency 3, 40 ms per-wave stagger, in-order assembly, cancel on first failure | **measured 5 chunks: 3999 ms -> 384 ms (10.4x, 3.6 s saved)** |
 | 429 handling | whole translation failed | per-chunk retry (500 ms, 1200 ms) then the same English rate-limit error | long texts survive one throttled chunk |
 | Chunk splitting | `utf8.RuneCountInString` + `[]rune(rest)` per iteration: O(n²) with repeated allocation | one `[]rune` conversion, rune-indexed cutting, same delimiter rules | 50k-char paste: tens of ms -> <1 ms (derived) |
 | Translation cache (Go) | none | LRU, 64 entries / ~2 MB, key `source|target|text`, returns by value | repeat translations cost microseconds |
@@ -25,7 +25,41 @@ Estimates are tagged **(measured)**, **(derived)**, **(guessed)**.
 
 TTS now rides the pooled transport too, so its first chunk also skips a handshake.
 
-## 2. Network facts measured from this machine
+## 2. Measured on this machine (Go 1.27.3, `wails build`, real endpoint)
+
+Two throwaway WinHTTP probes (same host, same request shape) were run against
+`translate.googleapis.com`; the numbers below are wall-clock, not estimates.
+
+**Connection reuse (transport change).** 5 requests each, warm connection:
+
+| Path | pooled session+connect (new) | fresh session+connect per request (old) |
+|---|---|---|
+| `/robots.txt` (4.7 KB, no server work) | 87.6 ms mean | 87.4 ms mean |
+| `/translate_a/single?...` | 98.4 ms mean | 99.6 ms mean |
+
+Conclusion: on this network a system proxy (Cloudflare WARP) adds a fixed
+~85 ms RTT, so a fresh TLS handshake costs only a few ms — the pooling change
+is strictly correct but saves ~0-12 ms here. Do not sell it as a headline win;
+on a direct/low-latency-once-cached network the saving would be larger, but it
+was not observable here.
+
+**Chunk translation (5 chunks, serial+250 ms vs first-alone+concurrency 3+40 ms/wave):**
+
+```
+serial   : 3999 ms   (chunk timings: 416, 1424, 2455, 3140, 3999 cumulative)
+parallel :  384 ms   (first chunk 94 ms, rest done by 384 ms)
+speedup  : 10.4x, 3615 ms saved
+```
+
+**Deterministic savings (arithmetic, not measured):** capture sleeps 120 ms ->
+20 ms per Win+T (~100 ms every hotkey); frontend floor 800 ms -> 250 ms
+(up to 550 ms per debounced call); HWND lookup `EnumWindows` scan -> cached
+(~1-4 ms, machine-dependent); cache hits skip the network entirely.
+
+**Build health:** `go vet ./...` clean, `gofmt -l` clean, `wails build`
+succeeds in 18.9 s, binary `build/bin/translate-wails.exe` = 11,886,592 bytes.
+
+## 3. Network facts measured from this machine
 
 - `POST https://translate.googleapis.com/translate_a/single` with the form params
   (`client=gtx, sl=auto, tl=tr, dt=t, ie=UTF-8, oe=UTF-8, q=...`) returns **HTTP 200**
@@ -37,7 +71,7 @@ TTS now rides the pooled transport too, so its first chunk also skips a handshak
 - Consequence: the 1800-byte threshold makes POST the common path for non-ASCII text
   over ~600 chars. That is intentional and verified.
 
-## 3. Still on the table (ranked by impact / risk)
+## 4. Still on the table (ranked by impact / risk)
 
 1. **Progressive output.** `TranslateText` returns only when every chunk is done, so a
    long paste shows nothing for the whole duration. Emit a Wails event per finished
@@ -66,7 +100,7 @@ TTS now rides the pooled transport too, so its first chunk also skips a handshak
    network before either stores a cache entry; a `singleflight`-style map would dedupe.
    Rare with debounce + 250 ms floor.
 
-## 4. How to verify after building (no instrumentation shipped)
+## 5. How to verify after building (no instrumentation shipped)
 
 Small, ordering-safe probes; add, measure, remove.
 
@@ -85,7 +119,7 @@ Small, ordering-safe probes; add, measure, remove.
 5. Clipboard integrity: copy an image, press Win+T in a text app, confirm the image is
    still on the clipboard (this path still drops non-text formats — unchanged).
 
-## 5. Do NOT do this (already tried and failed here)
+## 6. Do NOT do this (already tried and failed here)
 
 - **No UIA on the hotkey path.** Untimed cross-process COM wedges the hotkey thread and
   drags the Wails UI thread into cross-apartment servicing → "not responding" →
