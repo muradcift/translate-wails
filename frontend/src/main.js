@@ -182,9 +182,7 @@ function copyBridge(text) {
     updateSpellcheck();
     if (out.textContent && !out.classList.contains("placeholder") && !out.classList.contains("error")) {
       input.value = out.textContent;
-      out.textContent = "Translation will appear here…";
-      out.classList.add("placeholder");
-      out.classList.remove("error");
+      paintOutput("Translation will appear here…", false, true);
     }
     schedule();
   });
@@ -192,10 +190,17 @@ function copyBridge(text) {
   let timer = null;
   let seq = 0;
   let debounceMs = 300;
-  const MIN_INTERVAL = 800;
   const RETRY_DELAY = 1500;
+  const RATE_LIMIT_BACKOFF = 1200;
+  const BACKOFF_DECAY = 600;
+  const SOFT_INTERVAL = 250;
+  const CACHE_CAP = 40;
   let lastKey = "";
   let lastCallAt = 0;
+  let minInterval = SOFT_INTERVAL; // adaptive throttle floor (ms); soft floor between network calls
+  let backoffRemaining = 0; // successes needed to clear the backoff
+  const translationCache = new Map(); // `${from}|${to}|${text}` -> {translatedText, detectedSource}
+  let countRaf = 0;
   function schedule() {
     clearTimeout(timer);
     timer = setTimeout(() => doRun(), debounceMs);
@@ -207,10 +212,47 @@ function copyBridge(text) {
     return /Rate limited/i.test(msg);
   }
 
+  function paintOutput(text, isError, isPlaceholder) {
+    if (out.textContent !== text) out.textContent = text;
+    const hasErr = out.classList.contains("error");
+    if (isError !== hasErr) {
+      if (isError) out.classList.add("error");
+      else out.classList.remove("error");
+    }
+    const hasPh = out.classList.contains("placeholder");
+    if (isPlaceholder !== hasPh) {
+      if (isPlaceholder) out.classList.add("placeholder");
+      else out.classList.remove("placeholder");
+    }
+  }
+
   function updateCount() {
-    const len = input.value.length;
-    const words = input.value.trim() ? input.value.trim().split(/\s+/).length : 0;
-    count.textContent = `${words} Words • ${len} Characters`;
+    const compute = () => {
+      const v = input.value;
+      const len = v.length;
+      let words = 0;
+      let inWord = false;
+      for (let i = 0; i < v.length; i++) {
+        const c = v.charCodeAt(i);
+        const ws = c === 32 || c === 9 || c === 10 || c === 13 || c === 12 || c === 11;
+        if (ws) inWord = false;
+        else if (!inWord) {
+          inWord = true;
+          words++;
+        }
+      }
+      const next = `${words} Words • ${len} Characters`;
+      if (count.textContent !== next) count.textContent = next;
+    };
+    if (typeof requestAnimationFrame !== "function") {
+      compute();
+      return;
+    }
+    if (countRaf) return;
+    countRaf = requestAnimationFrame(() => {
+      countRaf = 0;
+      compute();
+    });
   }
 
   async function doRun(retry = 0, seqId = null) {
@@ -218,17 +260,29 @@ function copyBridge(text) {
     const text = input.value.trim();
     updateCount();
     if (!text) {
-      out.textContent = "Translation will appear here…";
-      out.classList.remove("error");
-      out.classList.add("placeholder");
+      paintOutput("Translation will appear here…", false, true);
       status.textContent = "";
       return;
     }
     const key = `${fromSel.value}|${toSel.value}|${text}`;
     if (retry === 0) {
       if (key === lastKey) return;
+      // Client-side cache: instant paint, no network, no throttle wait.
+      const cached = translationCache.get(key);
+      if (cached) {
+        if (seqId === null) seqId = ++seq;
+        if (seqId !== seq) return;
+        paintOutput(cached.translatedText, false, false);
+        status.textContent = "";
+        lastKey = key;
+        if (cached.detectedSource && cached.detectedSource !== lastDetected) {
+          lastDetected = cached.detectedSource;
+          updateSpellcheck();
+        }
+        return;
+      }
       if (seqId === null) seqId = ++seq;
-      const wait = MIN_INTERVAL - (Date.now() - lastCallAt);
+      const wait = minInterval - (Date.now() - lastCallAt);
       if (wait > 0) {
         clearTimeout(timer);
         timer = setTimeout(() => {
@@ -244,33 +298,50 @@ function copyBridge(text) {
     try {
       const r = await translateBridge(text, fromSel.value, toSel.value);
       if (seqId !== seq) return;
-      out.textContent = r.translatedText;
-      out.classList.remove("error");
-      out.classList.remove("placeholder");
+      paintOutput(r.translatedText, false, false);
       status.textContent = "";
       lastKey = key;
       if (r.detectedSource && r.detectedSource !== lastDetected) {
         lastDetected = r.detectedSource;
         updateSpellcheck();
       }
+      // Store in cache (FIFO eviction on overflow).
+      if (!translationCache.has(key)) {
+        if (translationCache.size >= CACHE_CAP) {
+          const oldest = translationCache.keys().next().value;
+          translationCache.delete(oldest);
+        }
+      }
+      translationCache.set(key, { translatedText: r.translatedText, detectedSource: r.detectedSource });
+      // Decay adaptive backoff on success.
+      if (backoffRemaining > 0) {
+        backoffRemaining--;
+        minInterval = backoffRemaining > 0 ? BACKOFF_DECAY : SOFT_INTERVAL;
+      }
     } catch (err) {
       if (seqId !== seq) return;
-      if (isRateLimit(err) && retry < 2) {
-        status.textContent = "Rate limited, retrying…";
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-          if (seqId === seq) doRun(retry + 1, seqId);
-        }, RETRY_DELAY);
-        return;
+      if (isRateLimit(err)) {
+        minInterval = RATE_LIMIT_BACKOFF;
+        backoffRemaining = 2;
+        if (retry < 2) {
+          status.textContent = "Rate limited, retrying…";
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            if (seqId === seq) doRun(retry + 1, seqId);
+          }, RETRY_DELAY);
+          return;
+        }
       }
-      out.textContent = err instanceof Error ? err.message : String(err);
-      out.classList.add("error");
-      out.classList.remove("placeholder");
+      const msg = err instanceof Error ? err.message : String(err);
+      paintOutput(msg, true, false);
       status.textContent = "";
     }
   }
 
-  input.addEventListener("input", schedule);
+  input.addEventListener("input", () => {
+    updateCount();
+    schedule();
+  });
 
   document.getElementById("copybtn").addEventListener("click", () => {
     const t = out.textContent;
@@ -373,8 +444,10 @@ function copyBridge(text) {
   const speechAvailable = "speechSynthesis" in window;
   let speakingBtn = null;
   let currentAudio = null;
+  let currentAudioUrl = null;
   let speechToken = 0; // bumped on stop: invalidates in-flight async chains
   let voices = [];
+  const pendingTtsUrls = new Set(); // blob URLs not yet played/revoked
 
   function ttsLang(code) {
     if (!code) return null;
@@ -426,6 +499,13 @@ function copyBridge(text) {
 
   function stopSpeaking() {
     speechToken++;
+    // Revoke every blob URL still pending (prefetched / not yet played).
+    for (const u of pendingTtsUrls) {
+      try {
+        URL.revokeObjectURL(u);
+      } catch {}
+    }
+    pendingTtsUrls.clear();
     if (currentAudio) {
       const a = currentAudio;
       currentAudio = null;
@@ -433,6 +513,12 @@ function copyBridge(text) {
       a.onerror = null;
       a.pause();
       a.removeAttribute("src");
+    }
+    if (currentAudioUrl) {
+      try {
+        URL.revokeObjectURL(currentAudioUrl);
+      } catch {}
+      currentAudioUrl = null;
     }
     if (speechAvailable) window.speechSynthesis.cancel();
     setSpeakingUI(null);
@@ -478,18 +564,28 @@ function copyBridge(text) {
   }
 
   async function ttsChunkUrl(text, lang) {
+    const myToken = speechToken;
     const b64 = await speakBridge(text, lang);
-    return b64ToBlobUrl(b64);
+    const url = b64ToBlobUrl(b64);
+    if (myToken !== speechToken) {
+      URL.revokeObjectURL(url);
+      return url;
+    }
+    pendingTtsUrls.add(url);
+    return url;
   }
 
   function playBlob(url) {
     return new Promise((resolve) => {
       const a = new Audio(url);
       currentAudio = a;
+      currentAudioUrl = url;
+      pendingTtsUrls.delete(url);
       const done = () => {
         if (currentAudio === a) {
           currentAudio = null;
           URL.revokeObjectURL(url);
+          if (currentAudioUrl === url) currentAudioUrl = null;
         }
         resolve();
       };
@@ -509,16 +605,42 @@ function copyBridge(text) {
       } catch (e) {
         console.warn("TTS bridge failed:", e);
       }
-      if (token !== speechToken) return;
+      if (token !== speechToken) {
+        if (blobUrl) {
+          pendingTtsUrls.delete(blobUrl);
+          try {
+            URL.revokeObjectURL(blobUrl);
+          } catch {}
+        }
+        return;
+      }
       if (!blobUrl) {
         ttsUnavailableNotice();
         speakLocal(texts.slice(i).join(" "), lang);
         return;
       }
       // Prefetch the next chunk while this one plays.
-      next = i + 1 < texts.length ? ttsChunkUrl(texts[i + 1], lang) : null;
+      const prefetch = i + 1 < texts.length ? ttsChunkUrl(texts[i + 1], lang) : null;
+      next = prefetch;
       await playBlob(blobUrl);
-      if (token !== speechToken) return;
+      if (token !== speechToken) {
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch {}
+        if (prefetch) {
+          prefetch
+            .then((u) => {
+              if (token !== speechToken && u) {
+                pendingTtsUrls.delete(u);
+                try {
+                  URL.revokeObjectURL(u);
+                } catch {}
+              }
+            })
+            .catch(() => {});
+        }
+        return;
+      }
     }
     setSpeakingUI(null);
   }

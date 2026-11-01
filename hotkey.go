@@ -77,10 +77,32 @@ func (a *App) startHotkeyLoop() {
 // clipboard Ctrl+C must land in the previous app.
 func (a *App) handleHotkey() {
 	// (a) Instant visual feedback, zero focus change.
-	hwnd := findTranslatorWindow()
+	// Resolve our window from a cached handle; re-enumerate only when the
+	// cache is empty or has gone stale (destroyed window). The cache is
+	// hotkey-thread-only, so no lock is needed.
+	hwnd := translatorHwndCache
+	if hwnd != 0 && !translatorHwndValid(hwnd) {
+		translatorHwndCache = 0
+		hwnd = 0
+	}
+	if hwnd == 0 {
+		hwnd = findTranslatorWindow()
+		translatorHwndCache = hwnd
+	}
 	if hwnd != 0 {
 		hideFromTaskbar(hwnd)
 		procShowWindow.Call(hwnd, swShowNA)
+		// A stale/destroyed handle can silently fail the show step; fall
+		// back to one fresh enumeration in that case.
+		if !isWindowVisible(hwnd) {
+			translatorHwndCache = 0
+			hwnd = findTranslatorWindow()
+			translatorHwndCache = hwnd
+			if hwnd != 0 {
+				hideFromTaskbar(hwnd)
+				procShowWindow.Call(hwnd, swShowNA)
+			}
+		}
 	}
 
 	// Between show and prefill: frontend flags that a selection is being read.
@@ -94,9 +116,11 @@ func (a *App) handleHotkey() {
 	ch := make(chan string, 1)
 	go func() { ch <- captureSelection() }()
 	var text string
+	timer := time.NewTimer(captureDeadline)
+	defer timer.Stop()
 	select {
 	case text = <-ch:
-	case <-time.After(captureDeadline):
+	case <-timer.C:
 	}
 
 	// (c) Then foreground our window and deliver the text — unless the user
@@ -150,6 +174,31 @@ func enumTranslatorWindowProc(hwnd uintptr, _ uintptr) uintptr {
 		return 0
 	}
 	return 1
+}
+
+// Cached HWND of our "Translator" window for the hotkey path. Hotkey-thread
+// only; kbdhook.go keeps its own separate cache for the Win+, shortcut, which
+// we deliberately do not touch.
+var translatorHwndCache uintptr
+
+// translatorHwndValid reports whether hwnd still points at our own (live)
+// "Translator" window, so a cached handle can never wedge the flow on a
+// destroyed window.
+func translatorHwndValid(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	var pid uint32
+	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if pid != enumMyPid {
+		return false
+	}
+	var buf [256]uint16
+	n, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 256)
+	if n == 0 {
+		return false
+	}
+	return windows.UTF16ToString(buf[:n]) == "Translator"
 }
 
 // findTranslatorWindow finds our own "Translator" window via EnumWindows.

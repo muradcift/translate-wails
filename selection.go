@@ -48,6 +48,11 @@ func readSelectionViaClipboard() string {
 
 	copied := false
 	deadline := time.Now().Add(copyPollWindow)
+	// Poll fast at first (2 ms) and back off (4, 8, 16 ms): a successful
+	// copy usually lands in 1-5 ms, so the old flat 25 ms sleep added ~20 ms
+	// of average latency. First check above is effectively immediate.
+	delays := []time.Duration{2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond, 16 * time.Millisecond}
+	di := 0
 	for {
 		if getClipboardSequenceNumber() != seqBefore {
 			copied = true
@@ -56,7 +61,16 @@ func readSelectionViaClipboard() string {
 		if time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(25 * time.Millisecond)
+		d := delays[di]
+		if di < len(delays)-1 {
+			di++
+		}
+		if rem := time.Until(deadline); d > rem {
+			d = rem
+		}
+		if d > 0 {
+			time.Sleep(d)
+		}
 	}
 	if !copied {
 		return ""
@@ -91,20 +105,54 @@ func sendKey(vk uint16, up bool) {
 	procSendInput.Call(1, uintptr(unsafe.Pointer(&input[0])), inputSize)
 }
 
+// keyStroke is one synthesized keyboard event for a batched SendInput call.
+type keyStroke struct {
+	vk uint16
+	up bool
+}
+
+// sendKeys synthesizes several keyboard events in a single SendInput call.
+// Each INPUT is inputSize (40) bytes on 64-bit Windows: a type DWORD at +0,
+// 4 bytes of padding, then a KEYBDINPUT starting at +8 (wVk at +8, dwFlags
+// at +12). Passing the whole batch at once keeps the events adjacent in the
+// input stream and avoids per-event syscall overhead.
+func sendKeys(keys []keyStroke) {
+	if len(keys) == 0 {
+		return
+	}
+	buf := make([]byte, len(keys)*inputSize)
+	for i, k := range keys {
+		off := i * inputSize
+		binary.LittleEndian.PutUint32(buf[off:], inputKeyboard)
+		binary.LittleEndian.PutUint16(buf[off+8:], k.vk)
+		if k.up {
+			binary.LittleEndian.PutUint32(buf[off+12:], keyeventfKeyup)
+		}
+	}
+	procSendInput.Call(uintptr(len(keys)), uintptr(unsafe.Pointer(&buf[0])), inputSize)
+}
+
 func sendCtrlC() {
 	// WM_HOTKEY fires on Win+T key-down, so the user's Win is almost always
-	// still physically held here. Release the synthesized-key-state modifiers
-	// first, or the target app receives Ctrl+Win+C (no copy) instead of Ctrl+C.
-	sendKey(vkMenu, true)
-	sendKey(vkShift, true)
-	sendKey(vkLwin, true)
-	sendKey(vkRwin, true)
-	time.Sleep(30 * time.Millisecond)
-	sendKey(vkControl, false)
-	time.Sleep(30 * time.Millisecond)
-	sendKey(vkC, false)
-	time.Sleep(30 * time.Millisecond)
-	sendKey(vkC, true)
-	time.Sleep(30 * time.Millisecond)
-	sendKey(vkControl, true)
+	// still physically held here. Release the modifiers first (non-negotiable:
+	// otherwise the target app receives Ctrl+Win+C) as ONE SendInput batch.
+	sendKeys([]keyStroke{
+		{vkMenu, true},
+		{vkShift, true},
+		{vkLwin, true},
+		{vkRwin, true},
+	})
+	// Let the release batch be dispatched/processed before Ctrl+C arrives: a
+	// slow foreground app can otherwise still observe Win as held and turn the
+	// copy into Ctrl+Win+C. ~20 ms is enough even on a loaded machine; the old
+	// 4x30 ms was pure waste. Two batches (not one) because the release must be
+	// observed as completed modifier state before Ctrl+C is injected.
+	time.Sleep(20 * time.Millisecond)
+	// Ctrl+C as one atomic batch: down, down, up, up in input order.
+	sendKeys([]keyStroke{
+		{vkControl, false},
+		{vkC, false},
+		{vkC, true},
+		{vkControl, true},
+	})
 }
