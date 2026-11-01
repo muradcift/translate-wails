@@ -61,6 +61,7 @@ var (
 	procWinHttpQueryDataAvailable = modWinHTTP.NewProc("WinHttpQueryDataAvailable")
 	procWinHttpReadData           = modWinHTTP.NewProc("WinHttpReadData")
 	procWinHttpSetTimeouts        = modWinHTTP.NewProc("WinHttpSetTimeouts")
+	procWinHttpSetOption          = modWinHTTP.NewProc("WinHttpSetOption")
 	procWinHttpCloseHandle        = modWinHTTP.NewProc("WinHttpCloseHandle")
 )
 

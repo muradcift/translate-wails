@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -19,8 +21,42 @@ import (
 // some networks while OS-stack clients pass with identical URL and headers.
 // Fallback: net/http, if WinHTTP itself fails at the API level.
 //
+// Lifecycle / connection reuse:
+// A single WinHttp session handle (WinHttpOpen, with the Chrome UA as the
+// session default) and one connect handle per (host, port, secure) are cached
+// at package level behind winhttpCache (sync.Mutex). Only the request handle is
+// opened and closed per call; WinHTTP pools the underlying keep-alive
+// connections per session/connect handle, so repeated keystroke-triggered
+// translations no longer pay a fresh TCP connect + TLS handshake each time.
+//
+// Thread-safety: translation and TTS requests can be in flight concurrently
+// from different goroutines. winhttpCache.mu guards only the cached handles;
+// handle acquisition is a short critical section and the mutex is released
+// before any network I/O, so unrelated requests are not serialized on the
+// cache lock. WinHTTP API failures mark the cache close-pending; the cached
+// handles are closed only once every in-flight borrower has released them
+// (refcounted), so a handle is never closed while a borrower is using it.
+// Borrowers that arrive while close is pending reuse/create handles that are
+// themselves closed when the last borrower releases.
+//
 // Either way the caller sees (status, body); HTTP error statuses are handled
 // by the caller, not here.
+
+type winHTTPConnectKey struct {
+	host   string
+	port   int
+	secure bool
+}
+
+type winHTTPCache struct {
+	mu           sync.Mutex
+	session      uintptr
+	connects     map[winHTTPConnectKey]uintptr
+	inflight     int
+	closePending bool
+}
+
+var winhttpCache winHTTPCache
 
 func httpGet(rawurl string) (int, []byte, error) {
 	status, body, err := httpGetWinHTTP(rawurl)
@@ -49,7 +85,40 @@ func httpGetNet(rawurl string) (int, []byte, error) {
 	return resp.StatusCode, body, nil
 }
 
+func httpPostForm(rawurl string, form url.Values) (int, []byte, error) {
+	body := []byte(form.Encode())
+	status, respBody, err := httpWinHTTP("POST", rawurl, body)
+	if err == nil {
+		return status, respBody, nil
+	}
+	return httpPostFormNet(rawurl, form)
+}
+
+func httpPostFormNet(rawurl string, form url.Values) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodPost, rawurl, strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("User-Agent", chromeUA)
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := translateHTTPClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody))
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, body, nil
+}
+
 func httpGetWinHTTP(rawurl string) (int, []byte, error) {
+	return httpWinHTTP("GET", rawurl, nil)
+}
+
+func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 	var zero []byte
 	u, err := url.Parse(rawurl)
 	if err != nil || u.Host == "" {
@@ -58,71 +127,74 @@ func httpGetWinHTTP(rawurl string) (int, []byte, error) {
 	objectName := u.RequestURI()
 	secure := u.Scheme == "https"
 
-	ua, err := windows.UTF16PtrFromString(chromeUA)
-	if err != nil {
-		return 0, zero, err
-	}
-	host, err := windows.UTF16PtrFromString(u.Hostname())
-	if err != nil {
-		return 0, zero, err
-	}
-	obj, err := windows.UTF16PtrFromString(objectName)
-	if err != nil {
-		return 0, zero, err
-	}
-	// The User-Agent travels as the session default from WinHttpOpen (the
-	// supported way — REPLACE fails here with 12150 since request headers
-	// are not materialized yet). Accept has no default: ADD it.
-	verb, _ := windows.UTF16PtrFromString("GET")
-	acceptHeader, _ := windows.UTF16PtrFromString("Accept: application/json, text/plain, */*")
-
-	hSession, _, _ := procWinHttpOpen.Call(
-		uintptr(unsafe.Pointer(ua)),
-		winhttpAccessAutomaticProxy, 0, 0, 0)
-	if hSession == 0 {
-		return 0, zero, errors.New("WinHttpOpen failed")
-	}
-	defer procWinHttpCloseHandle.Call(hSession)
-	procWinHttpSetTimeouts.Call(hSession, 10000, 10000, 10000, 15000)
-
+	host := u.Hostname()
 	port := winhttpDefaultHTTPSPort
 	if u.Port() != "" {
 		if p, perr := parsePort(u.Port()); perr == nil {
 			port = p
 		}
 	}
-	hConnect, _, _ := procWinHttpConnect.Call(
-		hSession, uintptr(unsafe.Pointer(host)), uintptr(port), 0)
-	if hConnect == 0 {
-		return 0, zero, errors.New("WinHttpConnect failed")
+
+	obj, err := windows.UTF16PtrFromString(objectName)
+	if err != nil {
+		return 0, zero, err
 	}
-	defer procWinHttpCloseHandle.Call(hConnect)
+	verb, err := windows.UTF16PtrFromString(method)
+	if err != nil {
+		return 0, zero, err
+	}
+	acceptHeader, _ := windows.UTF16PtrFromString("Accept: application/json, text/plain, */*")
+	contentTypeHeader, _ := windows.UTF16PtrFromString("Content-Type: application/x-www-form-urlencoded")
+
+	_, connect, release, err := winHTTPBorrow(host, port, secure)
+	if err != nil {
+		winHTTPInvalidate()
+		return 0, zero, err
+	}
+	// defer release() must be registered BEFORE defer procWinHttpCloseHandle.Call(hRequest): defers are LIFO, so release runs after hRequest is closed.
+	defer release()
 
 	var flags uintptr
 	if secure {
 		flags = winhttpFlagSecure
 	}
 	hRequest, _, _ := procWinHttpOpenRequest.Call(
-		hConnect, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(obj)),
+		connect, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(obj)),
 		0, 0, 0, flags)
 	if hRequest == 0 {
+		winHTTPInvalidate()
 		return 0, zero, errors.New("WinHttpOpenRequest failed")
 	}
 	defer procWinHttpCloseHandle.Call(hRequest)
 
-	// User-Agent has a session default (set at WinHttpOpen): replace it.
-	// Accept has no default: add it only if new (REPLACE would fail 12150).
 	r, _, callErr := procWinHttpAddRequestHeaders.Call(
 		hRequest, uintptr(unsafe.Pointer(acceptHeader)), uintptr(0xFFFFFFFF), winhttpAddreqAddIfNew)
 	if r == 0 {
+		winHTTPInvalidate()
 		return 0, zero, fmt.Errorf("WinHttpAddRequestHeaders failed (%v)", callErr)
 	}
-	r, _, _ = procWinHttpSendRequest.Call(hRequest, 0, 0, 0, 0, 0, 0)
+	if method == "POST" {
+		r, _, callErr = procWinHttpAddRequestHeaders.Call(
+			hRequest, uintptr(unsafe.Pointer(contentTypeHeader)), uintptr(0xFFFFFFFF), winhttpAddreqAddIfNew)
+		if r == 0 {
+			winHTTPInvalidate()
+			return 0, zero, fmt.Errorf("WinHttpAddRequestHeaders failed (%v)", callErr)
+		}
+	}
+
+	var bodyPtr uintptr
+	if len(body) > 0 {
+		bodyPtr = uintptr(unsafe.Pointer(&body[0]))
+	}
+	r, _, _ = procWinHttpSendRequest.Call(
+		hRequest, 0, 0, bodyPtr, uintptr(len(body)), uintptr(len(body)), 0)
 	if r == 0 {
+		winHTTPInvalidate()
 		return 0, zero, errors.New("WinHttpSendRequest failed")
 	}
 	r, _, _ = procWinHttpReceiveResponse.Call(hRequest, 0)
 	if r == 0 {
+		winHTTPInvalidate()
 		return 0, zero, errors.New("WinHttpReceiveResponse failed")
 	}
 
@@ -136,20 +208,22 @@ func httpGetWinHTTP(rawurl string) (int, []byte, error) {
 		uintptr(unsafe.Pointer(&statusLen)),
 		0)
 	if r == 0 {
+		winHTTPInvalidate()
 		return 0, zero, errors.New("WinHttpQueryHeaders failed")
 	}
 
-	var body []byte
+	var respBody []byte
 	for {
 		var avail uint32
 		r, _, _ := procWinHttpQueryDataAvailable.Call(hRequest, uintptr(unsafe.Pointer(&avail)))
 		if r == 0 {
+			winHTTPInvalidate()
 			return 0, zero, errors.New("WinHttpQueryDataAvailable failed")
 		}
 		if avail == 0 {
 			break
 		}
-		if uint64(len(body))+uint64(avail) > maxHTTPBody {
+		if uint64(len(respBody))+uint64(avail) > maxHTTPBody {
 			return 0, zero, errors.New("response too large")
 		}
 		chunk := make([]byte, avail)
@@ -157,17 +231,108 @@ func httpGetWinHTTP(rawurl string) (int, []byte, error) {
 		r, _, _ = procWinHttpReadData.Call(
 			hRequest, uintptr(unsafe.Pointer(&chunk[0])), uintptr(avail), uintptr(unsafe.Pointer(&got)))
 		if r == 0 {
+			winHTTPInvalidate()
 			return 0, zero, errors.New("WinHttpReadData failed")
 		}
 		if got == 0 {
 			break
 		}
-		body = append(body, chunk[:got]...)
+		respBody = append(respBody, chunk[:got]...)
 		if got < avail {
 			break
 		}
 	}
-	return int(status), body, nil
+	return int(status), respBody, nil
+}
+
+func winHTTPBorrow(host string, port int, secure bool) (uintptr, uintptr, func(), error) {
+	c := &winhttpCache
+	c.mu.Lock()
+
+	if c.closePending && c.inflight == 0 {
+		closeCachedHandlesLocked()
+	}
+
+	if c.session == 0 {
+		ua, err := windows.UTF16PtrFromString(chromeUA)
+		if err != nil {
+			c.mu.Unlock()
+			return 0, 0, nil, err
+		}
+		h, _, _ := procWinHttpOpen.Call(
+			uintptr(unsafe.Pointer(ua)),
+			winhttpAccessAutomaticProxy, 0, 0, 0)
+		if h == 0 {
+			c.mu.Unlock()
+			return 0, 0, nil, errors.New("WinHttpOpen failed")
+		}
+		procWinHttpSetTimeouts.Call(h, 10000, 10000, 10000, 15000)
+		c.session = h
+	}
+	if c.connects == nil {
+		c.connects = make(map[winHTTPConnectKey]uintptr)
+	}
+	key := winHTTPConnectKey{host: host, port: port, secure: secure}
+	if hConn, ok := c.connects[key]; !ok || hConn == 0 {
+		hostPtr, err := windows.UTF16PtrFromString(host)
+		if err != nil {
+			c.mu.Unlock()
+			return 0, 0, nil, err
+		}
+		hConn, _, _ = procWinHttpConnect.Call(c.session, uintptr(unsafe.Pointer(hostPtr)), uintptr(port), 0)
+		if hConn == 0 {
+			c.closePending = true
+			if c.inflight == 0 {
+				closeCachedHandlesLocked()
+			}
+			c.mu.Unlock()
+			return 0, 0, nil, errors.New("WinHttpConnect failed")
+		}
+		c.connects[key] = hConn
+	}
+
+	session := c.session
+	connect := c.connects[key]
+	c.inflight++
+	c.mu.Unlock()
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if c.inflight > 0 {
+				c.inflight--
+			}
+			if c.closePending && c.inflight == 0 {
+				closeCachedHandlesLocked()
+			}
+		})
+	}
+	return session, connect, release, nil
+}
+
+func winHTTPInvalidate() {
+	c := &winhttpCache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closePending = true
+	if c.inflight == 0 {
+		closeCachedHandlesLocked()
+	}
+}
+
+func closeCachedHandlesLocked() {
+	c := &winhttpCache
+	for _, v := range c.connects {
+		procWinHttpCloseHandle.Call(v)
+	}
+	c.connects = nil
+	if c.session != 0 {
+		procWinHttpCloseHandle.Call(c.session)
+		c.session = 0
+	}
+	c.closePending = false
 }
 
 func parsePort(s string) (int, error) {
