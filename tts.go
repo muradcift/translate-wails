@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"net/url"
 	"unicode/utf8"
 )
@@ -30,9 +32,22 @@ func (a *App) SpeakTTS(text, lang string) (string, error) {
 	q.Set("client", "gtx")
 	q.Set("tl", lang)
 	q.Set("q", text)
-	status, body, err := httpGet(ttsEndpoint + "?" + q.Encode())
+
+	// Share the translation cooldown gate: a 429 here means the whole endpoint
+	// family is throttled, so TTS must not keep hammering it either. If the
+	// gate actually made us wait, jitter the wake-up so TTS does not fire in
+	// lockstep with translation chunks resuming after the same cooldown.
+	waited, _ := sharedRateGate.wait(context.Background())
+	if waited {
+		_ = sleepJitter(context.Background(), rateGateJitterMax)
+	}
+
+	status, body, retryAfter, err := httpGet(ttsEndpoint + "?" + q.Encode())
 	if err != nil {
 		return "", fmt.Errorf("TTS network error")
+	}
+	if status == http.StatusTooManyRequests {
+		sharedRateGate.pause(rateGateCooldown(retryAfter))
 	}
 	if status != 200 {
 		return "", fmt.Errorf("TTS HTTP %d", status)

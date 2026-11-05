@@ -322,8 +322,10 @@ function copyBridge(text) {
       if (seqId !== seq) return;
       if (isRateLimit(err)) {
         minInterval = RATE_LIMIT_BACKOFF;
-        backoffRemaining = 2;
-        if (retry < 2) {
+        // 429 sonrası 4 başarılı çağrı decay tabanında kalır, sonra 250 ms'ye döner.
+        backoffRemaining = 4;
+        // Backend zaten ortak cooldown ile retry yaptığı için ön yüz tek retry eder.
+        if (retry < 1) {
           status.textContent = "Rate limited, retrying…";
           clearTimeout(timer);
           timer = setTimeout(() => {
