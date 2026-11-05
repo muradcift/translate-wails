@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.png" width="96" alt="translate-wails logo">
+
 <h1>translate-wails</h1>
 
 <p><strong>Press <code>Win+T</code>. Get a translation.</strong></p>
@@ -8,12 +10,19 @@
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](go.mod)
 [![Wails](https://img.shields.io/badge/Wails-v2.15-DF0000)](https://wails.io)
 [![No API key](https://img.shields.io/badge/API_key-not_required-2ea44f)](#privacy)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
 
 A Windows-only desktop translator built with Wails v2 and Go. Select text in any application, press `Win+T`, and it is captured, translated, and shown in a small frameless window — no account, API key, or first-run setup. The keyless Google Translate endpoint does the work, and the resulting executable is a single file of about 11 MB.
 
 The UI is deliberately small: two language dropdowns, an input pane, an output pane, and two settings. Labels are in English. It is meant for quick lookups while you work, not for document editing.
+
+<p align="center">
+  <img src="assets/screenshot-main.png" alt="translate-wails main window" width="760">
+</p>
+
+<p align="center"><sub>The main window in the Default theme.</sub></p>
 
 ## Features
 
@@ -55,7 +64,11 @@ No CGO or gcc toolchain is required. The Windows integration uses `golang.org/x/
 
 ## Getting started
 
-There are no GitHub releases yet, so build from source.
+### Download
+
+Grab the latest `translate-wails.exe` from [Releases](https://github.com/muradcift/translate-wails/releases/latest) and run it. It is a single portable executable; no installer is required.
+
+### Build from source
 
 ```bash
 git clone https://github.com/muradcift/translate-wails.git
@@ -180,3 +193,7 @@ wails dev
 There is no automated test suite and no CI; changes are checked manually with `wails build` and by exercising the hotkey flow. Please keep new dependencies CGO-free, and keep the hotkey path clipboard-based — UI Automation was removed because it could wedge the process.
 
 Performance work and measurements are documented in [PERFORMANCE-NOTES.md](PERFORMANCE-NOTES.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
