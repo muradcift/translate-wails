@@ -89,8 +89,22 @@ type chunkResult struct {
 // as GET (closest to the original behaviour); very long encoded URLs go out
 // as a POST with the same parameters in the form body, because the endpoint
 // accepts both and a huge query string is the failure mode we are avoiding.
-func translateChunk(chunk, source, target string) (chunkResult, error) {
+func translateChunk(ctx context.Context, chunk, source, target string) (chunkResult, error) {
 	var zero chunkResult
+
+	// Observe the process-wide cooldown before sending. With no cooldown
+	// active this returns immediately, so the success path is unchanged.
+	waited, err := sharedRateGate.wait(ctx)
+	if err != nil {
+		return zero, err
+	}
+	// Spread wake-ups after a cooldown so parallel chunks do not retry in
+	// lockstep and immediately trip the limit again.
+	if waited {
+		if err := sleepJitter(ctx, rateGateJitterMax); err != nil {
+			return zero, err
+		}
+	}
 
 	q := url.Values{}
 	q.Set("client", "gtx")
@@ -109,17 +123,20 @@ func translateChunk(chunk, source, target string) (chunkResult, error) {
 
 	var status int
 	var body []byte
-	var err error
+	var retryAfter time.Duration
 	if len(fullURL) > maxURLLen {
-		status, body, err = httpPostForm(translateEndpoint, q)
+		status, body, retryAfter, err = httpPostForm(translateEndpoint, q)
 	} else {
-		status, body, err = httpGet(fullURL)
+		status, body, retryAfter, err = httpGet(fullURL)
 	}
 	if err != nil {
 		return zero, errors.New("Network error: could not reach the translation service.")
 	}
 
 	if status == http.StatusTooManyRequests {
+		// Pause every request for the header value (or the 2s default) so
+		// concurrent chunks stop retrying into an active rate limit.
+		sharedRateGate.pause(rateGateCooldown(retryAfter))
 		return zero, errRateLimited
 	}
 	if status != http.StatusOK {
@@ -161,11 +178,12 @@ func translateChunk(chunk, source, target string) (chunkResult, error) {
 }
 
 // translateChunkRetry wraps translateChunk with up to two retries on a rate
-// limit, with growing delays. Any other error is returned immediately. The
-// context is honoured while waiting between retries.
+// limit, with growing delays (jittered ±20% so parallel chunks do not retry in
+// lockstep). Any other error is returned immediately. The context is honoured
+// while waiting between retries.
 func translateChunkRetry(ctx context.Context, chunk, source, target string) (chunkResult, error) {
 	delays := []time.Duration{500 * time.Millisecond, 1200 * time.Millisecond}
-	res, err := translateChunk(chunk, source, target)
+	res, err := translateChunk(ctx, chunk, source, target)
 	if err == nil {
 		return res, nil
 	}
@@ -174,11 +192,11 @@ func translateChunkRetry(ctx context.Context, chunk, source, target string) (chu
 	}
 	for _, d := range delays {
 		select {
-		case <-time.After(d):
+		case <-time.After(jitterDuration(d, rateGateRetryJitterPct)):
 		case <-ctx.Done():
 			return chunkResult{}, ctx.Err()
 		}
-		res, err = translateChunk(chunk, source, target)
+		res, err = translateChunk(ctx, chunk, source, target)
 		if err == nil {
 			return res, nil
 		}

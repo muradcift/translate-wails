@@ -6,8 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -58,71 +61,95 @@ type winHTTPCache struct {
 
 var winhttpCache winHTTPCache
 
-func httpGet(rawurl string) (int, []byte, error) {
-	status, body, err := httpGetWinHTTP(rawurl)
+func httpGet(rawurl string) (int, []byte, time.Duration, error) {
+	status, body, retryAfter, err := httpGetWinHTTP(rawurl)
 	if err == nil {
-		return status, body, nil
+		return status, body, retryAfter, nil
 	}
 	return httpGetNet(rawurl)
 }
 
-func httpGetNet(rawurl string) (int, []byte, error) {
+func httpGetNet(rawurl string) (int, []byte, time.Duration, error) {
 	req, err := http.NewRequest(http.MethodGet, rawurl, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, 0, err
 	}
 	req.Header.Set("User-Agent", chromeUA)
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	resp, err := translateHTTPClient.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, 0, err
 	}
 	defer resp.Body.Close()
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, 0, err
 	}
-	return resp.StatusCode, body, nil
+	return resp.StatusCode, body, retryAfter, nil
 }
 
-func httpPostForm(rawurl string, form url.Values) (int, []byte, error) {
+func httpPostForm(rawurl string, form url.Values) (int, []byte, time.Duration, error) {
 	body := []byte(form.Encode())
-	status, respBody, err := httpWinHTTP("POST", rawurl, body)
+	status, respBody, retryAfter, err := httpWinHTTP("POST", rawurl, body)
 	if err == nil {
-		return status, respBody, nil
+		return status, respBody, retryAfter, nil
 	}
 	return httpPostFormNet(rawurl, form)
 }
 
-func httpPostFormNet(rawurl string, form url.Values) (int, []byte, error) {
+func httpPostFormNet(rawurl string, form url.Values) (int, []byte, time.Duration, error) {
 	req, err := http.NewRequest(http.MethodPost, rawurl, strings.NewReader(form.Encode()))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, 0, err
 	}
 	req.Header.Set("User-Agent", chromeUA)
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := translateHTTPClient.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, 0, err
 	}
 	defer resp.Body.Close()
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, 0, err
 	}
-	return resp.StatusCode, body, nil
+	return resp.StatusCode, body, retryAfter, nil
 }
 
-func httpGetWinHTTP(rawurl string) (int, []byte, error) {
+func httpGetWinHTTP(rawurl string) (int, []byte, time.Duration, error) {
 	return httpWinHTTP("GET", rawurl, nil)
 }
 
-func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
+// parseRetryAfter converts a Retry-After header into a duration. Both the
+// delta-seconds and the HTTP-date forms are accepted; absent or invalid
+// values (and dates in the past) yield 0, letting callers use their default.
+func parseRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, time.Duration, error) {
 	var zero []byte
 	u, err := url.Parse(rawurl)
 	if err != nil || u.Host == "" {
-		return 0, zero, errors.New("bad url")
+		return 0, zero, 0, errors.New("bad url")
 	}
 	objectName := u.RequestURI()
 	secure := u.Scheme == "https"
@@ -137,11 +164,11 @@ func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 
 	obj, err := windows.UTF16PtrFromString(objectName)
 	if err != nil {
-		return 0, zero, err
+		return 0, zero, 0, err
 	}
 	verb, err := windows.UTF16PtrFromString(method)
 	if err != nil {
-		return 0, zero, err
+		return 0, zero, 0, err
 	}
 	acceptHeader, _ := windows.UTF16PtrFromString("Accept: application/json, text/plain, */*")
 	contentTypeHeader, _ := windows.UTF16PtrFromString("Content-Type: application/x-www-form-urlencoded")
@@ -149,7 +176,7 @@ func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 	_, connect, release, err := winHTTPBorrow(host, port, secure)
 	if err != nil {
 		winHTTPInvalidate()
-		return 0, zero, err
+		return 0, zero, 0, err
 	}
 	// defer release() must be registered BEFORE defer procWinHttpCloseHandle.Call(hRequest): defers are LIFO, so release runs after hRequest is closed.
 	defer release()
@@ -163,7 +190,7 @@ func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 		0, 0, 0, flags)
 	if hRequest == 0 {
 		winHTTPInvalidate()
-		return 0, zero, errors.New("WinHttpOpenRequest failed")
+		return 0, zero, 0, errors.New("WinHttpOpenRequest failed")
 	}
 	defer procWinHttpCloseHandle.Call(hRequest)
 
@@ -171,14 +198,14 @@ func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 		hRequest, uintptr(unsafe.Pointer(acceptHeader)), uintptr(0xFFFFFFFF), winhttpAddreqAddIfNew)
 	if r == 0 {
 		winHTTPInvalidate()
-		return 0, zero, fmt.Errorf("WinHttpAddRequestHeaders failed (%v)", callErr)
+		return 0, zero, 0, fmt.Errorf("WinHttpAddRequestHeaders failed (%v)", callErr)
 	}
 	if method == "POST" {
 		r, _, callErr = procWinHttpAddRequestHeaders.Call(
 			hRequest, uintptr(unsafe.Pointer(contentTypeHeader)), uintptr(0xFFFFFFFF), winhttpAddreqAddIfNew)
 		if r == 0 {
 			winHTTPInvalidate()
-			return 0, zero, fmt.Errorf("WinHttpAddRequestHeaders failed (%v)", callErr)
+			return 0, zero, 0, fmt.Errorf("WinHttpAddRequestHeaders failed (%v)", callErr)
 		}
 	}
 
@@ -190,12 +217,12 @@ func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 		hRequest, 0, 0, bodyPtr, uintptr(len(body)), uintptr(len(body)), 0)
 	if r == 0 {
 		winHTTPInvalidate()
-		return 0, zero, errors.New("WinHttpSendRequest failed")
+		return 0, zero, 0, errors.New("WinHttpSendRequest failed")
 	}
 	r, _, _ = procWinHttpReceiveResponse.Call(hRequest, 0)
 	if r == 0 {
 		winHTTPInvalidate()
-		return 0, zero, errors.New("WinHttpReceiveResponse failed")
+		return 0, zero, 0, errors.New("WinHttpReceiveResponse failed")
 	}
 
 	var status uint32
@@ -209,7 +236,24 @@ func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 		0)
 	if r == 0 {
 		winHTTPInvalidate()
-		return 0, zero, errors.New("WinHttpQueryHeaders failed")
+		return 0, zero, 0, errors.New("WinHttpQueryHeaders failed")
+	}
+
+	// Retry-After is optional: an absent header (or a buffer too small for it)
+	// simply yields 0, and callers fall back to their default cooldown. The
+	// buffer lives on the stack and parsing happens before the body is read.
+	var retryAfter time.Duration
+	var retryAfterBuf [64]uint16
+	retryAfterLen := uint32(len(retryAfterBuf) * 2)
+	r, _, _ = procWinHttpQueryHeaders.Call(
+		hRequest,
+		winhttpQueryRetryAfter,
+		0,
+		uintptr(unsafe.Pointer(&retryAfterBuf[0])),
+		uintptr(unsafe.Pointer(&retryAfterLen)),
+		0)
+	if r != 0 && retryAfterLen <= uint32(len(retryAfterBuf)*2) {
+		retryAfter = parseRetryAfter(syscall.UTF16ToString(retryAfterBuf[:]))
 	}
 
 	var respBody []byte
@@ -218,13 +262,13 @@ func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 		r, _, _ := procWinHttpQueryDataAvailable.Call(hRequest, uintptr(unsafe.Pointer(&avail)))
 		if r == 0 {
 			winHTTPInvalidate()
-			return 0, zero, errors.New("WinHttpQueryDataAvailable failed")
+			return 0, zero, 0, errors.New("WinHttpQueryDataAvailable failed")
 		}
 		if avail == 0 {
 			break
 		}
 		if uint64(len(respBody))+uint64(avail) > maxHTTPBody {
-			return 0, zero, errors.New("response too large")
+			return 0, zero, 0, errors.New("response too large")
 		}
 		chunk := make([]byte, avail)
 		var got uint32
@@ -232,7 +276,7 @@ func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 			hRequest, uintptr(unsafe.Pointer(&chunk[0])), uintptr(avail), uintptr(unsafe.Pointer(&got)))
 		if r == 0 {
 			winHTTPInvalidate()
-			return 0, zero, errors.New("WinHttpReadData failed")
+			return 0, zero, 0, errors.New("WinHttpReadData failed")
 		}
 		if got == 0 {
 			break
@@ -242,7 +286,7 @@ func httpWinHTTP(method, rawurl string, body []byte) (int, []byte, error) {
 			break
 		}
 	}
-	return int(status), respBody, nil
+	return int(status), respBody, retryAfter, nil
 }
 
 func winHTTPBorrow(host string, port int, secure bool) (uintptr, uintptr, func(), error) {

@@ -121,6 +121,7 @@ const (
 	winhttpFlagSecure           = 0x00800000
 	winhttpAddreqAddIfNew       = 0x10000000
 	winhttpQueryStatusCode      = 19
+	winhttpQueryRetryAfter      = 36
 	winhttpQueryFlagNumber      = 0x20000000
 
 	maxHTTPBody = 8 << 20
